@@ -192,14 +192,12 @@ struct TrainingPool
         }
     }
 
-    void learn_fetch(BufferData &learn_buffer_data, const size_t n_samples)
+    void learn_fetch(BufferData &learn_buffer_data, const size_t n_blocks_to_sample, const size_t n_samples_per_block)
     {
 
-        const size_t lastest_safe_block = atomic_block_index.load();
-        const size_t end = (lastest_safe_block + margin) & n_blocks;
+        const size_t start = (atomic_block_index.load() + n_blocks - n_blocks_to_sample) % n_blocks; 
 
-        const size_t n_samples_per_block = n_samples / n_blocks;
-
+        sample(learn_buffer_data, consumer_buffer_data, start, n_blocks_to_sample, n_samples_per_block);
         // foo (tgt, src, start, end, block_size, num_samples)
     }
 };
@@ -259,7 +257,7 @@ void inference()
 void buffer_thread_test()
 {
     TrainingPool training_pool{1 << 10, 1 << 6, 1 << 2};
-    setup_rng();
+    setup_rng(0);
 
 
     const size_t n_actor_threads = 4;

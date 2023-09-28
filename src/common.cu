@@ -10,7 +10,7 @@
 #include <curand.h>
 #include <curand_kernel.h>
 
-curandState *devStates;
+__device__ curandState *devStates;
 
 __global__ void __convert_kernel(const uint64_t *input, float *output)
 {
@@ -26,45 +26,51 @@ __global__ void __convert_kernel(const uint64_t *input, float *output)
     }
 }
 
-__global__ void __sample_kernel(
-    BufferData tgt,
-    BufferData src,
-    const int start_block_index,
-    const int end_block_index)
+__device__ float __generate(curandState* globalState, int ind)
 {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-
-    // int sample_index = (int)(ceil((curand_uniform(&state) * (blockDim.x + 1))) - 1);
-
-    // output[tid] = (float)value;
-}
-
-__global__ void __setup_kernel ( curandState * state, unsigned long seed )
-{
-    int id = threadIdx.x;
-    curand_init ( seed, id, 0, &state[id] );
-}
-
-__device__ float generate(curandState* globalState, int ind)
-{
-    //int ind = threadIdx.x;
     curandState localState = globalState[ind];
     float RANDOM = curand_uniform( &localState );
     globalState[ind] = localState;
     return RANDOM;
 }
 
+__global__ void __sample_kernel(
+    BufferData tgt,
+    BufferData src,
+    const int block_size,
+    const int start_block_index)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    const int block_index = start_block_index + blockIdx.x;
+    const int base_sample_index = block_index * block_size;
+
+    // int sample_index = (int)(ceil((curand_uniform(&devStates) * (blockDim.x + 1))) - 1);
+    float r = __generate(devStates, blockIdx.x);
+
+    // output[tid] = (float)value;
+}
+
+__global__ void __setup_kernel ( unsigned long seed )
+{
+    cudaMalloc(&devStates, gridDim.x * sizeof(curandState));
+    curand_init ( seed, blockIdx.x, 0, &devStates[blockIdx.x] );
+}
+
+
+
 
 void sample(
     BufferData tgt,
     BufferData src,
+    const int block_size,
     const int start_block_index,
-    const int end_block_index,
-    const int num_samples)
+    const int num_blocks_to_sample,
+    const int num_samples_per_block)
 {
-    dim3 gridDim(end_block_index - start_block_index, 1, 1);
-    dim3 blockDim(num_samples, 1, 1);
-    __sample_kernel<<<gridDim, blockDim>>>(tgt, src, start_block_index, end_block_index);
+    dim3 gridDim(num_blocks_to_sample, 1, 1);
+    dim3 blockDim(num_samples_per_block, 1, 1);
+    __sample_kernel<<<gridDim, blockDim>>>(tgt, src, block_size, start_block_index);
 };
 
 void convert(
@@ -124,10 +130,9 @@ void dealloc_buffers(
     cudaFree(float_buffer);
 }
 
-void setup_rng(const int n_threads)
+void setup_rng(const int n_blocks)
 {
-    cudaMalloc(&devStates, n_threads * sizeof(curandState));
     srand(time(0));
     int seed = rand();
-    __setup_kernel<<<2, 5>>>(devStates, seed);
+    __setup_kernel<<<n_blocks, 1>>>(seed);
 }

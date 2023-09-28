@@ -45,6 +45,6 @@ void sample(
     int start_block_index,
     int end_block_index,
     int num_samples);
-    
-void setup_rng();
+
+void setup_rng(const int n_blocks);
 #endif
