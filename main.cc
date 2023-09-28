@@ -86,9 +86,9 @@ struct Buffer
     float *float_input_buffer;
     float *joined_policy_buffer;
 
-    void store(Types::State &state, int index)
+    void store(const Types::State &state, int index)
     {
-        unsigned long long *ptr = reinterpret_cast<unsigned long long *>(state.battle.bytes);
+        const unsigned long long *ptr = reinterpret_cast<const unsigned long long *>(state.battle.bytes);
         copy_battle(raw_input_buffer, ptr, index);
         convert(float_input_buffer, raw_input_buffer, index);
     }
@@ -100,7 +100,7 @@ void write_to_buffer(
     Buffer &buffer = *buffer_ptr;
 
     Types::PRNG device{};
-    Types::State state{};
+    Types::State state{device.get_seed()};
     Types::Model model{0};
     const size_t iterations = 1 << 10;
     const Types::Search search{};
@@ -110,11 +110,9 @@ void write_to_buffer(
     {
         if (state.is_terminal())
         {
-            state = Types::State{};
+            state = Types::State{device.get_seed()};
             state.randomize_transition(device);
         }
-        state.get_actions();
-
         Types::MatrixNode root{};
         search.run_for_iterations(iterations, device, state, model, root);
 
@@ -124,6 +122,7 @@ void write_to_buffer(
         const int col_idx = device.random_int(state.col_actions.size());
 
         state.apply_actions(state.row_actions[row_idx], state.col_actions[col_idx]);
+        state.get_actions();
 
         buffer.store(state, index);
         index = buffer.batch_idx.fetch_add(1);
@@ -132,11 +131,11 @@ void write_to_buffer(
 
 void buffer_thread_test()
 {
-    const int batch_size = 1 << 6;
+    const int batch_size = 1 << 12;
 
     Buffer buffer{batch_size};
 
-    const size_t n_threads = 1;
+    const size_t n_threads = 4;
     std::thread threads[n_threads];
     auto start = std::chrono::high_resolution_clock::now();
 

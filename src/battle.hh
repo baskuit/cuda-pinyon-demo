@@ -41,7 +41,7 @@ struct BattleTypes : TypeList
         // this wrapper mirrors `example.c` in engine repo
         pkmn_gen1_battle battle;
         pkmn_gen1_log_options log_options;
-        pkmn_gen1_battle_options options;
+        pkmn_gen1_battle_options options{};
         pkmn_result result;
 
         State(const uint64_t seed = 0)
@@ -76,7 +76,24 @@ struct BattleTypes : TypeList
             // offset copy probably slower
             log_options = {this->obs.get().data(), log_size};
             pkmn_gen1_battle_options_set(&options, &log_options, NULL, NULL);
-            result = other.result;
+            // result = other.result;
+        }
+
+        State& operator=(const State &other)
+        {
+            this->row_actions = other.row_actions;
+            this->col_actions = other.col_actions;
+            this->terminal = other.terminal;
+            // this->obs = other.obs;
+            // this->prob = other.prob;
+
+            // memcpy(battle.bytes, other.battle.bytes, 384 - 8); // don't need seed
+            memcpy(battle.bytes, other.battle.bytes, 384);
+            // offset copy probably slower
+            log_options = {this->obs.get().data(), log_size};
+            pkmn_gen1_battle_options_set(&options, &log_options, NULL, NULL);
+            // result = other.result;
+            return *this;
         }
 
         void get_actions()
