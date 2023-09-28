@@ -63,50 +63,163 @@ size_t get_max_log()
     return max_log;
 }
 
-struct Buffer
+// RAII pinned buffer
+struct ProducerBuffer
 {
-
-    Buffer(const size_t batch_size) : batch_size{batch_size}
+    ProducerBuffer(const size_t block_size, const size_t n_blocks)
+        : block_size{block_size}, n_blocks{n_blocks}, batch_size{n_blocks * block_size}
     {
-        alloc_buffers(&raw_input_buffer, &float_input_buffer, batch_size);
-        std::cout << "raw input buffer size: " << (float(batch_size * 47 * 64) / 1000000) << std::endl;
-        std::cout << "float input buffer size: " << (float(batch_size * 376 * 4) / 1000000) << std::endl;
-        // std::cout << "raw input buffer size: " << << std::endl;
+        alloc_buffers(&data.raw_input_buffer, &data.float_input_buffer, batch_size);
     }
 
-    ~Buffer()
+    ProducerBuffer(const size_t batch_size)
+        : block_size{batch_size}, n_blocks{1}, batch_size{batch_size}
     {
-        dealloc_buffers(&raw_input_buffer, &float_input_buffer);
+        alloc_buffers(&data.raw_input_buffer, &data.float_input_buffer, batch_size);
     }
 
+    ~ProducerBuffer()
+    {
+        dealloc_buffers(&data.raw_input_buffer, &data.float_input_buffer);
+    }
+
+    ProducerBuffer(const ProducerBuffer &) = delete;
+
+    const size_t block_size;
+    const size_t n_blocks;
     const size_t batch_size;
-    std::atomic<uint64_t> batch_idx{0};
+    std::atomic<uint64_t> atomic_index{0};
 
-    unsigned long long *raw_input_buffer;
-    float *float_input_buffer;
-    float *joined_policy_buffer;
+    BufferData data{};
 
-    void store(const Types::State &state, int index)
+    size_t get_batch_index()
     {
-        const unsigned long long *ptr = reinterpret_cast<const unsigned long long *>(state.battle.bytes);
-        copy_battle(raw_input_buffer, ptr, index);
-        convert(float_input_buffer, raw_input_buffer, index);
+        return atomic_index.fetch_add(1) % batch_size;
     }
 };
 
-void write_to_buffer(
-    Buffer *buffer_ptr)
+struct ConsumerBuffer
 {
-    Buffer &buffer = *buffer_ptr;
+    ConsumerBuffer(const size_t batch_size)
+        : batch_size{batch_size}
+    {
+        alloc_buffers(&data.raw_input_buffer, &data.float_input_buffer, batch_size);
+    }
+
+    ~ConsumerBuffer()
+    {
+        dealloc_buffers(&data.raw_input_buffer, &data.float_input_buffer);
+    }
+
+    ConsumerBuffer(const ConsumerBuffer &) = delete;
+
+    const size_t batch_size;
+    std::atomic<uint64_t> atomic_index{0};
+
+    BufferData data{};
+
+    size_t get_batch_index()
+    {
+        return atomic_index.fetch_add(1) % batch_size;
+    }
+};
+
+struct TrainingPool
+{
+    const size_t block_size;
+    const size_t n_blocks;
+    const size_t n_producer_blocks;
+    const size_t size;
+
+    const size_t margin = 1; // number of blocks to avoid from up next
+    // has own sync mechanisms
+    ProducerBuffer producer_buffer{
+        block_size, n_producer_blocks};
+
+    BufferData consumer_buffer_data{};
+
+    std::atomic_int64_t atomic_block_index{0};
+
+    std::vector<std::atomic_int64_t> block_atomics;
+    Types::PRNG sample_device{};
+
+    std::vector<uint64_t> raw_input_vector{};
+    std::vector<float> float_input_vector{};
+    std::vector<uint64_t> value_data_vector{};
+    std::vector<float> joined_policy_vector{};
+    std::vector<uint32_t> joined_policy_index_vector{};
+
+    TrainingPool(const size_t block_size, const size_t blocks, const size_t n_producer_blocks)
+        : n_blocks{n_blocks}, n_producer_blocks{n_producer_blocks}, block_size{block_size}, size{n_blocks * block_size}
+    {
+        raw_input_vector.reserve(size * 47);
+        float_input_vector.reserve(size * 374);
+        value_data_vector.reserve(size * 1);
+        joined_policy_vector.reserve(size * 18);
+        joined_policy_index_vector.reserve(size * 18);
+        consumer_buffer_data = {
+            raw_input_vector.data(),
+            float_input_vector.data(),
+            value_data_vector.data(),
+            joined_policy_vector.data(),
+            joined_policy_index_vector.data()};
+    }
+
+    TrainingPool(const TrainingPool &) = delete;
+
+    void actor_store(const Types::State &state)
+    {
+        const size_t producer_batch_index = producer_buffer.get_batch_index();
+        const size_t producer_block_index = producer_batch_index / block_size;
+        const uint64_t *ptr = reinterpret_cast<const uint64_t *>(state.battle.bytes);
+        copy(
+            producer_buffer.data.raw_input_buffer + producer_batch_index * 47,
+            ptr,
+            47);
+        convert(
+            producer_buffer.data.float_input_buffer + producer_batch_index * 376,
+            producer_buffer.data.raw_input_buffer + producer_batch_index * 47);
+
+        if ((producer_batch_index + 1) % block_size == 0)
+        {
+            // store the 2nd most recent producer block
+            const int last_block_index = (producer_block_index + n_blocks - 1) % n_blocks;
+            const uint64_t tgt_index = atomic_block_index.fetch_add(1) % n_blocks;
+            copy(
+                consumer_buffer_data.raw_input_buffer + block_size * tgt_index,
+                producer_buffer.data.raw_input_buffer + block_size * last_block_index,
+                block_size);
+        }
+    }
+
+    void learn_fetch(BufferData &learn_buffer_data, const size_t n_samples)
+    {
+
+        const size_t lastest_safe_block = atomic_block_index.load();
+        const size_t end = (lastest_safe_block + margin) & n_blocks;
+
+        const size_t n_samples_per_block = n_samples / n_blocks;
+
+        // foo (tgt, src, start, end, block_size, num_samples)
+    }
+};
+
+void actor(
+    TrainingPool *training_pool_ptr)
+{
+    TrainingPool &training_pool = *training_pool_ptr;
+    ProducerBuffer &buffer = training_pool.producer_buffer;
 
     Types::PRNG device{};
     Types::State state{device.get_seed()};
     Types::Model model{0};
-    const size_t iterations = 1 << 10;
     const Types::Search search{};
+    const float full_prob = .25;
 
-    uint64_t index = buffer.batch_idx.fetch_add(1);
-    while (index < buffer.batch_size)
+    int counter = 0;
+
+    uint64_t index = buffer.atomic_index.fetch_add(1) % buffer.batch_size;
+    while (counter < buffer.batch_size)
     {
         if (state.is_terminal())
         {
@@ -114,6 +227,8 @@ void write_to_buffer(
             state.randomize_transition(device);
         }
         Types::MatrixNode root{};
+        const bool use_full = device.uniform() < full_prob;
+        const size_t iterations = use_full ? 1 << 10 : 1 << 8;
         search.run_for_iterations(iterations, device, state, model, root);
 
         Types::VectorReal row_strategy, col_strategy;
@@ -124,37 +239,56 @@ void write_to_buffer(
         state.apply_actions(state.row_actions[row_idx], state.col_actions[col_idx]);
         state.get_actions();
 
-        buffer.store(state, index);
-        index = buffer.batch_idx.fetch_add(1);
+        if (use_full)
+        {
+            ++counter;
+            training_pool.actor_store(state);
+            index = buffer.atomic_index.fetch_add(1) % buffer.batch_size;
+        }
     }
+}
+
+void inference()
+{
+    // call kernel to write battle bytes to buffer
+    // get index of bytes on pinned buffer
+    // create tensor from blob
+    // call inference on the tensor
 }
 
 void buffer_thread_test()
 {
-    const int batch_size = 1 << 12;
+    TrainingPool training_pool{1 << 10, 1 << 6, 1 << 2};
+    setup_rng();
 
-    Buffer buffer{batch_size};
 
-    const size_t n_threads = 4;
-    std::thread threads[n_threads];
+    const size_t n_actor_threads = 4;
+    std::thread threads[n_actor_threads];
     auto start = std::chrono::high_resolution_clock::now();
 
-    for (int i = 0; i < n_threads; ++i)
+    for (int i = 0; i < n_actor_threads; ++i)
     {
-        threads[i] = std::thread(&write_to_buffer, &buffer);
+        threads[i] = std::thread(&actor, &training_pool);
     }
 
-    for (int i = 0; i < n_threads; ++i)
+    // std::thread learner_thread{&read_from_buffer, &buffer};
+
+    for (int i = 0; i < n_actor_threads; ++i)
     {
         threads[i].join();
     }
 
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    std::cout << batch_size / (double)duration.count() * 1000 << " steps/sec" << std::endl;
+    std::cout << 2 * training_pool.producer_buffer.batch_size * n_actor_threads / (double)duration.count() * 1000 << " steps/sec" << std::endl;
+
+    // learner_thread.join();
 }
+
 int main()
 {
+
+
     buffer_thread_test();
     return 0;
 }
