@@ -4,8 +4,7 @@ set (CMAKE_CXX_STANDARD 20)
 project(cuda-pinyon-demo)
 
 # packages                 
-find_package(CUDA)                                                                                                                                                                                
-# find_package(CUDAToolkit)
+find_package(CUDA REQUIRED)                                                                                                                                                                                
 
 # nvcc flags                                                                                                                                                                                               
 set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS};-gencode arch=compute_61,code=sm_61) # --allow-unsupported-compiler)
