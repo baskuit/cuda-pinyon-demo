@@ -1,9 +1,8 @@
-#ifndef COMMON
-#define COMMON
+#pragma once
 
 #include <stdint.h>
 
-struct BufferData
+struct Buffers
 {
     uint64_t *raw_input_buffer;
     float *float_input_buffer;
@@ -21,21 +20,24 @@ void copy(
     const uint64_t *src,
     const int len);
 
-void alloc_buffers(
-    BufferData &buffer_data,
+void alloc_pinned_buffers(
+    Buffers &buffer_data,
+    const long int batch_size);
+
+void alloc_device_buffers(
+    Buffers &buffer_data,
     const long int batch_size);
 
 void dealloc_buffers(
-    BufferData &buffer_data);
+    Buffers &buffer_data);
 
 void sample(
-    BufferData tgt,
-    BufferData src,
+    Buffers tgt,
+    Buffers src,
     const int block_size,
+    const int n_blocks,
     const int start_block_index,
     const int num_blocks_to_sample,
     const int num_samples_per_block);
 
 void setup_rng(const int n_blocks);
-
-#endif
