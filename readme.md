@@ -3,10 +3,11 @@
 This is a simple example of applying Pinyon to RL.
 
 Here we:
-    * Wrap @pkmn/engine so that it's compatible with the library.
-    * Write a CUDA backend to quickly convert the battle bytes into tensor data
-    * Use the automatic `TreeBandit<Exp3<MonteCarloModel<BattleTypes>>>::Search` to easily define training workers
-    * Train a neural network on GPU using the training games
+
+* Wrap @pkmn/engine so that it's compatible with the library.
+* Write a CUDA backend to quickly convert the battle bytes into tensor data
+* Use the automatic `TreeBandit<Exp3<MonteCarloModel<BattleTypes>>>::Search` to easily define training workers
+* Train a neural network on GPU using the training games
 
 ## pkmn/engine
 
