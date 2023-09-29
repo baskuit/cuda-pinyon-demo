@@ -5,7 +5,7 @@
 #include "./src/common.hh"
 
 // Pinyon type list for the entire program: Single threaded search on battles using Monte-Carlo eval.
-using Types = TreeBandit<Exp3<MonteCarloModel<BattleTypes>>, FlatNodes>;
+using Types = TreeBandit<Exp3<MonteCarloModel<BattleTypes>>, DefaultNodes>;
 
 void time_search()
 {
@@ -15,9 +15,24 @@ void time_search()
     const Types::Search search{};
     Types::MatrixNode root{};
 
-    const size_t iterations = 1 << 15;
+    const size_t iterations = 1 << 5;
     const size_t duration_ms = search.run_for_iterations(iterations, device, state, model, root);
     std::cout << iterations << " MCTS iterations completed in " << duration_ms << " ms." << std::endl;
+}
+
+void rollouts()
+{
+    Types::PRNG device{0};
+    Types::Model model{0};
+    const Types::Search search{};
+    Types::MatrixNode root{};
+
+    for (int i = 0; i < 100; ++i)
+    {
+        Types::State state{0};
+        Types::ModelOutput o{};
+        model.inference(std::move(state), o);
+    }
 }
 
 size_t get_max_log()
@@ -129,12 +144,18 @@ struct TrainingPool
     const size_t block_size;
     const size_t n_blocks;
     const size_t n_producer_blocks;
+    const size_t n_prng_cuda_blocks;
+
     const size_t size;
 
     const size_t margin = 1; // number of blocks to avoid from up next
     // has own sync mechanisms
     ProducerBuffer producer_buffer{
         block_size, n_producer_blocks};
+
+    const size_t learner_minibatch_size = 512;
+    ProducerBuffer learner_buffer{
+        learner_minibatch_size, 1};
 
     BufferData consumer_buffer_data{};
 
@@ -149,8 +170,8 @@ struct TrainingPool
     std::vector<float> joined_policy_vector{};
     std::vector<uint32_t> joined_policy_index_vector{};
 
-    TrainingPool(const size_t block_size, const size_t blocks, const size_t n_producer_blocks)
-        : n_blocks{n_blocks}, n_producer_blocks{n_producer_blocks}, block_size{block_size}, size{n_blocks * block_size}
+    TrainingPool(const size_t block_size, const size_t n_blocks, const size_t n_producer_blocks, const size_t n_prng_cuda_blocks)
+        : n_blocks{n_blocks}, n_producer_blocks{n_producer_blocks}, block_size{block_size}, size{n_blocks * block_size}, n_prng_cuda_blocks{n_prng_cuda_blocks}
     {
         raw_input_vector.reserve(size * 47);
         float_input_vector.reserve(size * 374);
@@ -182,28 +203,32 @@ struct TrainingPool
 
         if ((producer_batch_index + 1) % block_size == 0)
         {
+
             // store the 2nd most recent producer block
-            const int last_block_index = (producer_block_index + n_blocks - 1) % n_blocks;
-            const uint64_t tgt_index = atomic_block_index.fetch_add(1) % n_blocks;
+            const int src_block_index = (producer_block_index + n_producer_blocks - 1) % n_producer_blocks;
+            const int tgt_block_index = atomic_block_index.fetch_add(1) % n_blocks;
             copy(
-                consumer_buffer_data.raw_input_buffer + block_size * tgt_index,
-                producer_buffer.data.raw_input_buffer + block_size * last_block_index,
+                consumer_buffer_data.raw_input_buffer + block_size * tgt_block_index * 376,
+                producer_buffer.data.raw_input_buffer + block_size * src_block_index * 376,
                 block_size);
+            std::cout << "copy producer block: " << src_block_index << " to consumer block: " << tgt_block_index << std::endl;
         }
     }
 
-    void learn_fetch(BufferData &learn_buffer_data, const size_t n_blocks_to_sample, const size_t n_samples_per_block)
+    void learn_fetch(BufferData &learn_buffer_data)
     {
+        const size_t n_samples_per_block = learner_minibatch_size / n_prng_cuda_blocks;
+        const size_t start = (atomic_block_index.load() + n_blocks - n_prng_cuda_blocks) % n_blocks;
 
-        const size_t start = (atomic_block_index.load() + n_blocks - n_blocks_to_sample) % n_blocks; 
-
-        sample(learn_buffer_data, consumer_buffer_data, start, n_blocks_to_sample, n_samples_per_block);
+        sample(learn_buffer_data, consumer_buffer_data, block_size, start, n_prng_cuda_blocks, n_samples_per_block);
+        // std::cout << "sample at " << start << std::endl;
         // foo (tgt, src, start, end, block_size, num_samples)
-    }
+    };
 };
 
 void actor(
-    TrainingPool *training_pool_ptr)
+    TrainingPool *training_pool_ptr,
+    const long long int max_counter)
 {
     TrainingPool &training_pool = *training_pool_ptr;
     ProducerBuffer &buffer = training_pool.producer_buffer;
@@ -217,7 +242,7 @@ void actor(
     int counter = 0;
 
     uint64_t index = buffer.atomic_index.fetch_add(1) % buffer.batch_size;
-    while (counter < buffer.batch_size)
+    while (counter < max_counter)
     {
         if (state.is_terminal())
         {
@@ -241,35 +266,39 @@ void actor(
         {
             ++counter;
             training_pool.actor_store(state);
-            index = buffer.atomic_index.fetch_add(1) % buffer.batch_size;
         }
     }
 }
 
-void inference()
+void learner(
+    TrainingPool *training_pool_ptr)
 {
-    // call kernel to write battle bytes to buffer
-    // get index of bytes on pinned buffer
-    // create tensor from blob
-    // call inference on the tensor
+    while (true)
+    {
+        training_pool_ptr->learn_fetch(training_pool_ptr->learner_buffer.data);
+    }
 }
 
 void buffer_thread_test()
 {
-    TrainingPool training_pool{1 << 10, 1 << 6, 1 << 2};
-    setup_rng(0);
+    const int block_size = 1 << 10;
+    const int n_consumer_blocks = 1 << 6;
+    const int n_producer_blocks = 1 << 2;
+    const int n_prng_cuda_blocks = 8;
+    setup_rng(n_prng_cuda_blocks);
 
+    TrainingPool training_pool{block_size, n_consumer_blocks, n_producer_blocks, n_prng_cuda_blocks};
 
-    const size_t n_actor_threads = 4;
+    const size_t n_actor_threads = 6;
     std::thread threads[n_actor_threads];
     auto start = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < n_actor_threads; ++i)
     {
-        threads[i] = std::thread(&actor, &training_pool);
+        threads[i] = std::thread(&actor, &training_pool, block_size * n_producer_blocks / n_actor_threads);
     }
 
-    // std::thread learner_thread{&read_from_buffer, &buffer};
+    // std::thread learner_thread{&learner, &training_pool};
 
     for (int i = 0; i < n_actor_threads; ++i)
     {
@@ -278,15 +307,14 @@ void buffer_thread_test()
 
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    std::cout << 2 * training_pool.producer_buffer.batch_size * n_actor_threads / (double)duration.count() * 1000 << " steps/sec" << std::endl;
+    std::cout << training_pool.producer_buffer.batch_size / (double)duration.count() * 1000 << " steps/sec" << std::endl;
 
     // learner_thread.join();
 }
 
 int main()
 {
-
-
+    // time_search();
     buffer_thread_test();
     return 0;
 }

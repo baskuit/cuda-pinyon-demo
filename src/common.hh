@@ -23,11 +23,6 @@ void copy(
     const uint64_t *src,
     const int len);
 
-void copy_battle(
-    uint64_t *ouput,
-    const uint64_t *battle_bytes,
-    const int index);
-
 void alloc_buffers(
     uint64_t **raw_buffer,
     float **float_buffer,
@@ -42,9 +37,10 @@ void cuda_test();
 void sample(
     BufferData tgt,
     BufferData src,
-    int start_block_index,
-    int end_block_index,
-    int num_samples);
+    const int block_size,
+    const int start_block_index,
+    const int num_blocks_to_sample,
+    const int num_samples_per_block);
 
 void setup_rng(const int n_blocks);
 #endif

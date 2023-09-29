@@ -34,6 +34,12 @@ __device__ float __generate(curandState* globalState, int ind)
     return RANDOM;
 }
 
+__global__ void __setup_kernel ( unsigned long seed )
+{
+    cudaMalloc(&devStates, gridDim.x * sizeof(curandState));
+    curand_init ( seed, blockIdx.x, 0, &devStates[blockIdx.x] );
+}
+
 __global__ void __sample_kernel(
     BufferData tgt,
     BufferData src,
@@ -41,24 +47,11 @@ __global__ void __sample_kernel(
     const int start_block_index)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
-
     const int block_index = start_block_index + blockIdx.x;
     const int base_sample_index = block_index * block_size;
-
-    // int sample_index = (int)(ceil((curand_uniform(&devStates) * (blockDim.x + 1))) - 1);
-    float r = __generate(devStates, blockIdx.x);
-
-    // output[tid] = (float)value;
+    const int sample_index = base_sample_index + (int)(ceil((__generate(devStates, blockIdx.x) * (block_size + 1))) - 1);
+    memcpy(tgt.float_input_buffer + tid * 376, src.float_input_buffer + sample_index * 376, 376);
 }
-
-__global__ void __setup_kernel ( unsigned long seed )
-{
-    cudaMalloc(&devStates, gridDim.x * sizeof(curandState));
-    curand_init ( seed, blockIdx.x, 0, &devStates[blockIdx.x] );
-}
-
-
-
 
 void sample(
     BufferData tgt,
@@ -68,9 +61,7 @@ void sample(
     const int num_blocks_to_sample,
     const int num_samples_per_block)
 {
-    dim3 gridDim(num_blocks_to_sample, 1, 1);
-    dim3 blockDim(num_samples_per_block, 1, 1);
-    __sample_kernel<<<gridDim, blockDim>>>(tgt, src, block_size, start_block_index);
+    __sample_kernel<<<num_blocks_to_sample, num_samples_per_block>>>(tgt, src, block_size, start_block_index);
 };
 
 void convert(
@@ -88,14 +79,6 @@ void copy(
     const int len)
 {
     cudaMemcpy(dest, src, len, cudaMemcpyHostToDevice);
-}
-
-void copy_battle(
-    uint64_t *raw_bytes,
-    const uint64_t *battle_bytes,
-    const int index)
-{
-    cudaMemcpy(raw_bytes, battle_bytes, 376, cudaMemcpyHostToDevice);
 }
 
 void alloc_buffers(
