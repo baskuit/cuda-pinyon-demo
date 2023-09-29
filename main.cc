@@ -4,52 +4,27 @@
 
 #include "./src/battle.hh"
 #include "./src/common.hh"
-
-class Net : public torch::nn::Module
-{
-public:
-    torch::Device device = torch::kCUDA;
-    torch::nn::Linear fc{nullptr};
-
-    Net()
-    {
-        // input
-        fc = register_module("fc_input", torch::nn::Linear(376, 1));
-    }
-
-    void to(const torch::Device &device)
-    {
-        static_cast<torch::nn::Module *>(this)->to(device);
-        this->device = device;
-    }
-
-    torch::Tensor
-    forward(torch::Tensor x)
-    {
-        torch::Tensor value = torch::sigmoid(fc(x));
-        return value;
-    }
-};
+#include "./src/net.hh"
 
 // Pinyon type list for the entire program: Single threaded search on battles using Monte-Carlo eval.
 using Types = TreeBandit<Exp3<MonteCarloModel<BattleTypes>>, DefaultNodes>;
 // Need Types defined first
 #include "./src/scripts.hh"
 
-struct PinnedBuffer
+// RAII pinned buffer
+struct PinnedBuffer : BufferData
 {
-    BufferData data;
     const size_t size;
 
     PinnedBuffer(const size_t size)
         : size{size}
     {
-        alloc_buffers(data, size);
+        alloc_buffers(*this, size);
     }
 
     ~PinnedBuffer()
     {
-        dealloc_buffers(data);
+        dealloc_buffers(*this);
     }
 
     PinnedBuffer(const PinnedBuffer &) = delete;
@@ -59,7 +34,6 @@ struct PinnedBuffer
 struct CPUBuffer : BufferData
 {
     const size_t size;
-
     std::vector<uint64_t> raw_input_vector{};
     std::vector<float> float_input_vector{};
     std::vector<uint64_t> value_data_vector{};
@@ -86,41 +60,8 @@ struct CPUBuffer : BufferData
     CPUBuffer &operator=(const CPUBuffer &&) = delete;
 };
 
-// RAII pinned buffer
-struct ProducerBuffer : BufferData
-{
-    ProducerBuffer(const size_t block_size, const size_t n_blocks)
-        : block_size{block_size}, n_blocks{n_blocks}, batch_size{n_blocks * block_size}
-    {
-        alloc_buffers(*this, batch_size);
-    }
-
-    ProducerBuffer(const size_t batch_size)
-        : block_size{batch_size}, n_blocks{1}, batch_size{batch_size}
-    {
-        alloc_buffers(*this, batch_size);
-    }
-
-    ~ProducerBuffer()
-    {
-        dealloc_buffers(*this);
-    }
-
-    ProducerBuffer(const ProducerBuffer &) = delete;
-
-    const size_t block_size;
-    const size_t n_blocks;
-    const size_t batch_size;
-    std::atomic<uint64_t> atomic_index{0};
-
-    size_t get_batch_index()
-    {
-        return atomic_index.fetch_add(1) % batch_size;
-    }
-};
-
 /*
-Initializses buffer
+Initializses buffers, contains synch mechanism for actor and learner threads
 */
 struct TrainingPool
 {
@@ -128,58 +69,58 @@ struct TrainingPool
     const size_t n_consumer_blocks;
     const size_t n_producer_blocks;
     const size_t n_prng_cuda_blocks;
+    const size_t learner_minibatch_size;
 
-    const size_t margin = 1; // number of blocks to avoid from up next
-    // has own sync mechanisms
-    ProducerBuffer producer_buffer{
-        block_size, n_producer_blocks};
+    const size_t producer_buffer_size{block_size * n_producer_blocks};
+    const size_t consumer_buffer_size{block_size * n_consumer_blocks};
 
-    const size_t learner_minibatch_size = 256;
-    ProducerBuffer learner_buffer{
-        learner_minibatch_size, 1};
+    PinnedBuffer producer_buffer{
+        producer_buffer_size};
+    std::atomic<uint64_t> producer_index{0};
 
-    CPUBuffer consumer_buffer_data{
+    PinnedBuffer learner_buffer{
+        learner_minibatch_size};
+
+    CPUBuffer consumer_buffer{
         block_size * n_consumer_blocks};
+    std::atomic_int64_t consumer_block_index{0};
 
-    std::atomic_int64_t atomic_block_index{0};
-
-    std::vector<std::atomic_int64_t> block_atomics;
-    Types::PRNG sample_device{};
-
-    std::vector<uint64_t> raw_input_vector{};
-    std::vector<float> float_input_vector{};
-    std::vector<uint64_t> value_data_vector{};
-    std::vector<float> joined_policy_vector{};
-    std::vector<uint32_t> joined_policy_index_vector{};
-
-    TrainingPool(const size_t block_size, const size_t n_consumer_blocks, const size_t n_producer_blocks, const size_t n_prng_cuda_blocks)
-        : block_size{block_size}, n_consumer_blocks{n_consumer_blocks}, n_producer_blocks{n_producer_blocks}, n_prng_cuda_blocks{n_prng_cuda_blocks}
+    TrainingPool(
+        const size_t block_size,
+        const size_t n_consumer_blocks,
+        const size_t n_producer_blocks,
+        const size_t n_prng_cuda_blocks,
+        const size_t learner_minibatch_size)
+        : block_size{block_size},
+          n_consumer_blocks{n_consumer_blocks},
+          n_producer_blocks{n_producer_blocks},
+          n_prng_cuda_blocks{n_prng_cuda_blocks},
+          learner_minibatch_size{learner_minibatch_size}
     {
     }
 
     TrainingPool(const TrainingPool &) = delete;
 
-    void actor_store(const Types::State &state)
+    void actor_store(const Types::State &state) // TODO add policy data, etc
     {
-        const size_t producer_batch_index = producer_buffer.get_batch_index();
-        const size_t producer_block_index = producer_batch_index / block_size;
+        const size_t producer_buffer_index = producer_index.fetch_add(1) % producer_buffer_size;
+        const size_t producer_block_index = producer_buffer_index / block_size;
         const uint64_t *ptr = reinterpret_cast<const uint64_t *>(state.battle.bytes);
         copy(
-            producer_buffer.raw_input_buffer + producer_batch_index * 47,
+            producer_buffer.raw_input_buffer + producer_buffer_index * 47,
             ptr,
             47);
         convert(
-            producer_buffer.float_input_buffer + producer_batch_index * 376,
-            producer_buffer.raw_input_buffer + producer_batch_index * 47);
+            producer_buffer.float_input_buffer + producer_buffer_index * 376,
+            producer_buffer.raw_input_buffer + producer_buffer_index * 47);
 
-        if ((producer_batch_index + 1) % block_size == 0)
+        if ((producer_buffer_index + 1) % block_size == 0)
         {
-
             // store the 2nd most recent producer block
-            const int src_block_index = (producer_block_index + n_producer_blocks - 1) % n_producer_blocks;
-            const int tgt_block_index = atomic_block_index.fetch_add(1) % n_consumer_blocks;
+            const size_t src_block_index = (producer_block_index + n_producer_blocks - 1) % n_producer_blocks;
+            const size_t tgt_block_index = consumer_block_index.fetch_add(1) % n_consumer_blocks;
             copy(
-                consumer_buffer_data.raw_input_buffer + block_size * tgt_block_index * 376,
+                consumer_buffer.raw_input_buffer + block_size * tgt_block_index * 376,
                 producer_buffer.raw_input_buffer + block_size * src_block_index * 376,
                 block_size);
             std::cout << "copy producer block: " << src_block_index << " to consumer block: " << tgt_block_index << std::endl;
@@ -189,17 +130,16 @@ struct TrainingPool
     void learn_fetch(BufferData &learn_buffer_data)
     {
         const size_t n_samples_per_block = learner_minibatch_size / n_prng_cuda_blocks;
-        const size_t start = (atomic_block_index.load() + n_consumer_blocks - n_prng_cuda_blocks) % n_consumer_blocks;
-        sample(learn_buffer_data, consumer_buffer_data, block_size, start, n_prng_cuda_blocks, n_samples_per_block);
+        const size_t start = (consumer_block_index.load() + n_consumer_blocks - n_prng_cuda_blocks) % n_consumer_blocks;
+        sample(learn_buffer_data, consumer_buffer, block_size, start, n_prng_cuda_blocks, n_samples_per_block);
     };
 };
 
 void actor(
-    TrainingPool *training_pool_ptr,
-    const long long int max_counter)
+    TrainingPool *training_pool_ptr)
 {
     TrainingPool &training_pool = *training_pool_ptr;
-    ProducerBuffer &buffer = training_pool.producer_buffer;
+    PinnedBuffer &buffer = training_pool.producer_buffer;
 
     Types::PRNG device{};
     Types::State state{device.get_seed()};
@@ -207,9 +147,7 @@ void actor(
     const Types::Search search{};
     const float full_prob = .25;
 
-    int counter = 0;
-
-    while (buffer.atomic_index.load() < buffer.batch_size)
+    while (training_pool.producer_index.load() < training_pool.block_size * training_pool.n_producer_blocks)
     {
         if (state.is_terminal())
         {
@@ -231,7 +169,6 @@ void actor(
 
         if (use_full)
         {
-            ++counter;
             training_pool.actor_store(state);
         }
     }
@@ -244,11 +181,9 @@ void learner(
     torch::Tensor *target)
 {
     torch::optim::SGD optimizer{net->parameters(), .001};
-
     while (true)
     {
         training_pool_ptr->learn_fetch(training_pool_ptr->learner_buffer);
-
         // torch::Tensor input = torch::from_blob(
         //     training_pool_ptr->float_input_vector.data(),
         //     {training_pool_ptr->learner_minibatch_size, 376});
@@ -258,7 +193,6 @@ void learner(
         torch::Tensor loss = mse(output, *target);
         loss.backward();
         optimizer.step();
-
         std::cout << '!' << std::endl;
     }
 }
@@ -269,14 +203,15 @@ void buffer_thread_test()
     const int n_consumer_blocks = 1 << 6;
     const int n_producer_blocks = 1 << 2;
     const int n_prng_cuda_blocks = 8;
+    const int learner_minibatch_size = 256;
     // setup_rng(n_prng_cuda_blocks);
-    TrainingPool training_pool{block_size, n_consumer_blocks, n_producer_blocks, n_prng_cuda_blocks};
+    TrainingPool training_pool{block_size, n_consumer_blocks, n_producer_blocks, n_prng_cuda_blocks, learner_minibatch_size};
 
     std::cout << "is cuda available" << torch::cuda::is_available() << std::endl;
     auto net = Net();
     net.to(torch::kCUDA);
-    torch::Tensor input = torch::rand({training_pool.learner_minibatch_size, 376}).to(net.device);
-    torch::Tensor target = torch::rand({training_pool.learner_minibatch_size, 1}).to(net.device);
+    torch::Tensor input = torch::rand({learner_minibatch_size, 376}).to(net.device);
+    torch::Tensor target = torch::rand({learner_minibatch_size, 1}).to(net.device);
 
     // setup_rng(n_prng_cuda_blocks);
 
@@ -286,7 +221,7 @@ void buffer_thread_test()
 
     for (int i = 0; i < n_actor_threads; ++i)
     {
-        threads[i] = std::thread(&actor, &training_pool, block_size * n_producer_blocks / n_actor_threads);
+        threads[i] = std::thread(&actor, &training_pool);
     }
 
     std::thread learner_thread{&learner, &training_pool, &net, &input, &target};
@@ -298,7 +233,7 @@ void buffer_thread_test()
 
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    std::cout << training_pool.producer_buffer.batch_size / (double)duration.count() * 1000 << " steps/sec" << std::endl;
+    std::cout << training_pool.producer_buffer_size / (double)duration.count() * 1000 << " steps/sec" << std::endl;
 
     learner_thread.join();
 }
