@@ -6,7 +6,7 @@
 #include "./common.hh"
 
 // RAII pinned buffer
-struct PinnedBuffers : Buffers
+struct PinnedBuffers : LearnerBuffers
 {
     const size_t size = 0;
 
@@ -28,7 +28,7 @@ struct PinnedBuffers : Buffers
 };
 
 // RAII pinned buffer
-struct DeviceBuffers : Buffers
+struct DeviceBuffers : LearnerBuffers
 {
     const size_t size = 0;
 
@@ -49,29 +49,29 @@ struct DeviceBuffers : Buffers
     DeviceBuffers &operator=(const DeviceBuffers &) = delete;
 };
 
-struct HostBuffers : Buffers
+// Buffers local to actor threads for storing samples for training game in-progress
+struct HostBuffers : ActorBuffers
 {
     size_t size;
     std::vector<uint64_t> raw_input_vector{};
-    std::vector<float> float_input_vector{};
     std::vector<uint64_t> value_data_vector{};
     std::vector<float> joined_policy_vector{};
-    std::vector<uint32_t> joined_policy_index_vector{};
+    std::vector<uint8_t> joined_actions_vector{};
+    std::vector<uint32_t> joined_n_actions_vector{};
 
     HostBuffers(const size_t size)
         : size{size}
     {
         raw_input_vector.resize(size * 47);
-        float_input_vector.resize(size * 376);
         value_data_vector.resize(size * 1);
         joined_policy_vector.resize(size * 18);
-        joined_policy_index_vector.resize(size * 18);
-        static_cast<Buffers &>(*this) = Buffers{
+        joined_actions_vector.resize(size * 18);
+        joined_n_actions_vector.resize(size * 2);
+        static_cast<ActorBuffers &>(*this) = ActorBuffers{
             raw_input_vector.data(),
-            float_input_vector.data(),
             value_data_vector.data(),
             joined_policy_vector.data(),
-            joined_policy_index_vector.data()};
+            joined_actions_vector.data()};
     }
 
     HostBuffers(const HostBuffers &) = delete;

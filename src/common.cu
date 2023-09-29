@@ -41,8 +41,8 @@ __global__ void __setup_kernel(unsigned long seed)
 }
 
 __global__ void __sample_kernel(
-    Buffers tgt,
-    Buffers src,
+    LearnerBuffers tgt,
+    LearnerBuffers src,
     const int block_size,
     const int start_block_index,
     const int n_blocks)
@@ -52,14 +52,14 @@ __global__ void __sample_kernel(
     const int block_index = (start_block_index + blockIdx.x) % n_blocks;
     const int base_sample_index = block_index * block_size;
     const int sample_index = base_sample_index + tid;// (int)(ceil((__generate(devStates, blockIdx.x) * (block_size + 1))) - 1);
-    memcpy(tgt.float_input_buffer + tid * 376, src.float_input_buffer + sample_index * 376, 376);
+    memcpy(tgt.float_input_buffer + tid * n_bytes_input, src.float_input_buffer + sample_index * n_bytes_input, n_bytes_input);
     // const int sample_index = base_sample_index + threadIdx.x;// + (int)(ceil((__generate(devStates, blockIdx.x) * (block_size + 1))) - 1);
-    // memcpy(tgt.float_input_buffer + tid * 376, src.float_input_buffer + tid * 376, 376);
+    // memcpy(tgt.float_input_buffer + tid * n_bytes_input, src.float_input_buffer + tid * n_bytes_input, n_bytes_input);
 }
 
 void sample(
-    Buffers tgt,
-    Buffers src,
+    LearnerBuffers tgt,
+    LearnerBuffers src,
     const int block_size,
     const int start_block_index,
     const int n_blocks,
@@ -85,23 +85,23 @@ void copy(
 }
 
 void alloc_pinned_buffers(
-    Buffers &buffer_data,
+    LearnerBuffers &buffer_data,
     const long int batch_size)
 {
     cudaMallocHost(&buffer_data.raw_input_buffer, batch_size * 47 * sizeof(uint64_t));
-    cudaMallocHost(&buffer_data.float_input_buffer, batch_size * 376 * sizeof(float));
+    cudaMallocHost(&buffer_data.float_input_buffer, batch_size * n_bytes_input * sizeof(float));
 }
 
 void alloc_device_buffers(
-    Buffers &buffer_data,
+    LearnerBuffers &buffer_data,
     const long int batch_size)
 {
     cudaMalloc(&buffer_data.raw_input_buffer, batch_size * 47 * sizeof(uint64_t));
-    cudaMalloc(&buffer_data.float_input_buffer, batch_size * 376 * sizeof(float));
+    cudaMalloc(&buffer_data.float_input_buffer, batch_size * n_bytes_input * sizeof(float));
 }
 
 void dealloc_buffers(
-    Buffers &buffer_data)
+    LearnerBuffers &buffer_data)
 {
     cudaFree(buffer_data.raw_input_buffer);
     cudaFree(buffer_data.float_input_buffer);

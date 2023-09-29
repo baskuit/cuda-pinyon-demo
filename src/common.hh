@@ -2,13 +2,24 @@
 
 #include <stdint.h>
 
-struct Buffers
+const int n_bytes_input = 376;
+
+struct ActorBuffers
+{
+    uint64_t *raw_input_buffer;
+    uint64_t *value_data_buffer;
+    float *joined_policy_buffer;
+    uint8_t *joined_actions_buffer;
+    uint32_t *joined_n_actions_buffer;
+};
+
+struct LearnerBuffers
 {
     uint64_t *raw_input_buffer;
     float *float_input_buffer;
-    uint64_t *value_data_tensor;
+    uint64_t *value_data_buffer;
     float *joined_policy_buffer;
-    unsigned int *joined_policy_index_buffer;
+    uint32_t *joined_policy_index_buffer;
 };
 
 void convert(
@@ -20,20 +31,23 @@ void copy(
     const uint64_t *src,
     const int len);
 
+void add_state_to_actor_buffers(
+    ActorBuffers &buffers);
+
 void alloc_pinned_buffers(
-    Buffers &buffer_data,
+    LearnerBuffers &buffer_data,
     const long int batch_size);
 
 void alloc_device_buffers(
-    Buffers &buffer_data,
+    LearnerBuffers &buffer_data,
     const long int batch_size);
 
 void dealloc_buffers(
-    Buffers &buffer_data);
+    LearnerBuffers &buffer_data);
 
 void sample(
-    Buffers tgt,
-    Buffers src,
+    LearnerBuffers tgt,
+    LearnerBuffers src,
     const int block_size,
     const int n_blocks,
     const int start_block_index,
