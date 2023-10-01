@@ -2,56 +2,51 @@
 
 #include <stdint.h>
 
-const int n_bytes_input = 376;
+const int n_bytes_battle = 376;
+const int n_pokemon = 151;
+const int n_moveslots = 165;
+const int policy_size = n_pokemon + n_moveslots;
 
 struct ActorBuffers
 {
     uint64_t *raw_input_buffer;
-    uint64_t *value_data_buffer;
+    float *value_data_buffer;
     float *joined_policy_buffer;
     uint8_t *joined_actions_buffer;
-    uint32_t *joined_n_actions_buffer;
 };
 
 struct LearnerBuffers
 {
-    uint64_t *raw_input_buffer;
     float *float_input_buffer;
-    uint64_t *value_data_buffer;
+    float *value_data_buffer;
     float *joined_policy_buffer;
     uint32_t *joined_policy_index_buffer;
 };
 
-void convert(
-    float *output,
-    const uint64_t *input);
+namespace CUDACommon
+{
+    void alloc_device_buffers(
+        LearnerBuffers &buffer_data,
+        const long int batch_size);
 
-void copy(
-    uint64_t *dest,
-    const uint64_t *src,
-    const int len);
+    void alloc_pinned_buffers(
+        LearnerBuffers &buffer_data,
+        const long int batch_size);
 
-void add_state_to_actor_buffers(
-    ActorBuffers &buffers);
+    void dealloc_buffers(
+        LearnerBuffers &buffer_data);
 
-void alloc_pinned_buffers(
-    LearnerBuffers &buffer_data,
-    const long int batch_size);
+    void copy_game_to_sample_buffer(
+        LearnerBuffers &sample_buffers,
+        const ActorBuffers &actor_buffers,
+        const int start_index,
+        const int count,
+        const int max_index);
 
-void alloc_device_buffers(
-    LearnerBuffers &buffer_data,
-    const long int batch_size);
-
-void dealloc_buffers(
-    LearnerBuffers &buffer_data);
-
-void sample(
-    LearnerBuffers tgt,
-    LearnerBuffers src,
-    const int block_size,
-    const int n_blocks,
-    const int start_block_index,
-    const int num_blocks_to_sample,
-    const int num_samples_per_block);
-
-void setup_rng(const int n_blocks);
+    void copy_sample_to_learner_buffer(
+        LearnerBuffers learner_buffer,
+        const LearnerBuffers sample_buffer,
+        const int start_index,
+        const int range,
+        const int n_samples);
+};

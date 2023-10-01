@@ -3,16 +3,11 @@
 #include <pkmn.h>
 #include <pinyon.hh>
 
+#include "buffers.hh"
 #include "../sides.hh"
 
-const size_t n_battle_bytes = 384;
-const size_t n_battle_bytes_no_prng = 376;
 // number of bytes from the log to use as the observation
 const size_t log_size = 64;
-
-const uint8_t n_pokemon = 151;
-const uint8_t n_moveslots = 165;
-const size_t policy_size = n_pokemon + n_moveslots;
 
 using BrokenTypeList = DefaultTypes<
     float,                         // floating point type used for calculations
@@ -53,7 +48,7 @@ struct BattleTypes : TypeList
             const auto col_side = sides[device.random_int(n_sides)];
             memcpy(battle.bytes, row_side, 184);
             memcpy(battle.bytes + 184, col_side, 184);
-            for (int i = 2 * 184; i < n_battle_bytes_no_prng; ++i)
+            for (int i = 2 * 184; i < n_bytes_battle; ++i)
             {
                 battle.bytes[i] = 0;
             }
@@ -99,7 +94,6 @@ struct BattleTypes : TypeList
         void get_actions()
         {
             // this is why we made the action vector type an array
-            // unsafe cast! FIXME
             this->row_actions.resize(
                 pkmn_gen1_battle_choices(
                     &battle,
@@ -148,7 +142,7 @@ struct BattleTypes : TypeList
         void randomize_transition(TypeList::PRNG &device)
         {
             // reinterpret start of prng as one 64 bit, assign at once
-            uint8_t *battle_prng_bytes = battle.bytes + n_battle_bytes_no_prng;
+            uint8_t *battle_prng_bytes = battle.bytes + n_bytes_battle;
             *(reinterpret_cast<uint64_t *>(battle_prng_bytes)) = device.get_seed();
         }
     };

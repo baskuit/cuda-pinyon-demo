@@ -8,19 +8,16 @@
 // RAII pinned buffer
 struct PinnedBuffers : LearnerBuffers
 {
-    const size_t size = 0;
-
     PinnedBuffers() {}
 
-    PinnedBuffers(const size_t size)
-        : size{size}
+    PinnedBuffers(const int size)
     {
-        alloc_pinned_buffers(*this, size);
+        CUDACommon::alloc_pinned_buffers(*this, size);
     }
 
     ~PinnedBuffers()
     {
-        dealloc_buffers(*this);
+        CUDACommon::dealloc_buffers(*this);
     }
 
     PinnedBuffers(const PinnedBuffers &) = delete;
@@ -30,19 +27,16 @@ struct PinnedBuffers : LearnerBuffers
 // RAII pinned buffer
 struct DeviceBuffers : LearnerBuffers
 {
-    const size_t size = 0;
-
     DeviceBuffers() {}
 
-    DeviceBuffers(const size_t size)
-        : size{size}
+    DeviceBuffers(const int size)
     {
-        alloc_device_buffers(*this, size);
+        CUDACommon::alloc_device_buffers(*this, size);
     }
 
     ~DeviceBuffers()
     {
-        dealloc_buffers(*this);
+        CUDACommon::dealloc_buffers(*this);
     }
 
     DeviceBuffers(const DeviceBuffers &) = delete;
@@ -52,21 +46,19 @@ struct DeviceBuffers : LearnerBuffers
 // Buffers local to actor threads for storing samples for training game in-progress
 struct HostBuffers : ActorBuffers
 {
-    size_t size;
+    int size;
     std::vector<uint64_t> raw_input_vector{};
-    std::vector<uint64_t> value_data_vector{};
+    std::vector<float> value_data_vector{};
     std::vector<float> joined_policy_vector{};
     std::vector<uint8_t> joined_actions_vector{};
-    std::vector<uint32_t> joined_n_actions_vector{};
 
-    HostBuffers(const size_t size)
+    HostBuffers(const int size)
         : size{size}
     {
         raw_input_vector.resize(size * 47);
-        value_data_vector.resize(size * 1);
+        value_data_vector.resize(size * 2);
         joined_policy_vector.resize(size * 18);
         joined_actions_vector.resize(size * 18);
-        joined_n_actions_vector.resize(size * 2);
         static_cast<ActorBuffers &>(*this) = ActorBuffers{
             raw_input_vector.data(),
             value_data_vector.data(),
@@ -75,5 +67,5 @@ struct HostBuffers : ActorBuffers
     }
 
     HostBuffers(const HostBuffers &) = delete;
-    // HostBuffers &operator=(const HostBuffers &) = delete;
+    HostBuffers &operator=(const HostBuffers &) = delete;
 };

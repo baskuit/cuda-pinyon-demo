@@ -6,15 +6,15 @@ project(cuda-pinyon-demo)
 # packages                 
 find_package(CUDA REQUIRED)   
 
-set(CMAKE_PREFIX_PATH "/home/user/Desktop/libtorch/")
-set(CMAKE_CUDA_ARCHITECTURES 61)
-# change this depending on your CUDA version
-set(CMAKE_CUDA_COMPILER /usr/local/cuda-12.1/bin/nvcc)
-# change this depending on installation path
-find_package(Torch REQUIRED)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
-# target_link_libraries(pinyon INTERFACE "${TORCH_LIBRARIES}")
-# target_compile_definitions(pinyon INTERFACE ENABLE_TORCH)
+# set(CMAKE_PREFIX_PATH "/home/user/Desktop/libtorch/")
+# set(CMAKE_CUDA_ARCHITECTURES 61)
+# # change this depending on your CUDA version
+# set(CMAKE_CUDA_COMPILER /usr/local/cuda-12.1/bin/nvcc)
+# # change this depending on installation path
+# find_package(Torch REQUIRED)
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
+# # target_link_libraries(pinyon INTERFACE "${TORCH_LIBRARIES}")
+# # target_compile_definitions(pinyon INTERFACE ENABLE_TORCH)
 
 
 # nvcc flags                                                                                                                                                                                               
@@ -31,4 +31,4 @@ add_executable(main main.cc)
 target_link_libraries(main pinyon)
 target_link_libraries(main ${PROJECT_SOURCE_DIR}/extern/engine/zig-out/lib/libpkmn-showdown.a)
 target_link_libraries(main common)
-target_link_libraries(main "${TORCH_LIBRARIES}")
+# target_link_libraries(main "${TORCH_LIBRARIES}")

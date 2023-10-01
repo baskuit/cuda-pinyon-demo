@@ -10,107 +10,102 @@
 #include <curand.h>
 #include <curand_kernel.h>
 
-__device__ curandState *devStates;
-
-__global__ void __convert_kernel(const uint64_t *input, float *output)
+namespace Kernels
 {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid < 47 * 8)
+    __global__ void convert_battle_bytes_to_floats(
+        float *tgt,
+        const uint64_t *src)
     {
-        int input_index = tid / 8;
-        int byte_index = tid % 8;
-        uint64_t value = input[input_index];
-        value >>= (64 - (byte_index * 8));
-        value &= 0xFF;
-        output[tid] = (float)value;
+        int tid = blockIdx.x * blockDim.x + threadIdx.x;
+        if (tid < 376)
+        {
+            const int input_index = tid / 8;
+            const int byte_index = tid % 8;
+            uint64_t byte_value = src[input_index];
+            byte_value >>= (64 - (byte_index * 8));
+            byte_value &= 0xFF;
+            tgt[tid] = (float)byte_value;
+        }
     }
-}
+    __global__ void __sample_kernel(
+        LearnerBuffers tgt,
+        LearnerBuffers src,
+        const int block_size,
+        const int start_block_index,
+        const int n_blocks)
+    {
+        const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+        const int block_index = (start_block_index + blockIdx.x) % n_blocks;
+        const int base_sample_index = block_index * block_size;
 
-__device__ float __generate(curandState* globalState, int ind)
-{
-    curandState localState = globalState[ind];
-    float RANDOM = curand_uniform( &localState );
-    globalState[ind] = localState;
-    return RANDOM;
-}
+        curandState state;
+        curand_init(clock64(), tid, 0, &state);
 
-__global__ void __setup_kernel(unsigned long seed)
-{
-    cudaMalloc(&devStates, gridDim.x * sizeof(curandState));
-    curand_init ( seed, blockIdx.x, 0, &(devStates[blockIdx.x]) );
-}
-
-__global__ void __sample_kernel(
-    LearnerBuffers tgt,
-    LearnerBuffers src,
-    const int block_size,
-    const int start_block_index,
-    const int n_blocks)
-{
-
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    const int block_index = (start_block_index + blockIdx.x) % n_blocks;
-    const int base_sample_index = block_index * block_size;
-    const int sample_index = base_sample_index + tid;// (int)(ceil((__generate(devStates, blockIdx.x) * (block_size + 1))) - 1);
-    memcpy(tgt.float_input_buffer + tid * n_bytes_input, src.float_input_buffer + sample_index * n_bytes_input, n_bytes_input);
-    // const int sample_index = base_sample_index + threadIdx.x;// + (int)(ceil((__generate(devStates, blockIdx.x) * (block_size + 1))) - 1);
-    // memcpy(tgt.float_input_buffer + tid * n_bytes_input, src.float_input_buffer + tid * n_bytes_input, n_bytes_input);
-}
-
-void sample(
-    LearnerBuffers tgt,
-    LearnerBuffers src,
-    const int block_size,
-    const int start_block_index,
-    const int n_blocks,
-    const int n_blocks_to_sample,
-    const int n_samples_per_block)
-{
-    __sample_kernel<<<n_blocks_to_sample, n_samples_per_block>>>(tgt, src, block_size, start_block_index, n_blocks);
+        const int sample_index =
+            base_sample_index +
+            (int)(ceil((curand_uniform(&state) * (block_size + 1))) - 1);
+        memset(
+            tgt.float_input_buffer + tid * n_bytes_battle,
+            1.4, n_bytes_battle);
+        memcpy(
+            tgt.value_data_buffer + tid * 8,
+            src.value_data_buffer + base_sample_index * 8, 8);
+        memcpy(
+            tgt.joined_policy_buffer + tid * 18 * 4,
+            src.joined_policy_buffer + base_sample_index * 18 * 4, 18 * 4);
+        memcpy(
+            tgt.joined_policy_index_buffer + tid * 18 * 4,
+            src.joined_policy_index_buffer + base_sample_index * 18 * 4, 18 * 4);
+    }
 };
 
-void convert(
-    float *output,
-    const uint64_t *input)
-{
-    __convert_kernel<<<12, 32>>>(input, output);
-}
-
-void copy(
-    uint64_t *dest,
-    const uint64_t *src,
-    const int len)
-{
-    cudaMemcpy(dest, src, len, cudaMemcpyHostToDevice);
-}
-
-void alloc_pinned_buffers(
+void CUDACommon::alloc_pinned_buffers(
     LearnerBuffers &buffer_data,
     const long int batch_size)
 {
-    cudaMallocHost(&buffer_data.raw_input_buffer, batch_size * 47 * sizeof(uint64_t));
-    cudaMallocHost(&buffer_data.float_input_buffer, batch_size * n_bytes_input * sizeof(float));
+    cudaMallocHost(&buffer_data.float_input_buffer, batch_size * n_bytes_battle * sizeof(float));
+    cudaMallocHost(&buffer_data.value_data_buffer, batch_size * 1 * sizeof(uint64_t));
+    cudaMallocHost(&buffer_data.joined_policy_buffer, batch_size * 18 * sizeof(float));
+    cudaMallocHost(&buffer_data.joined_policy_index_buffer, batch_size * 18 * sizeof(uint32_t));
 }
 
-void alloc_device_buffers(
+void CUDACommon::alloc_device_buffers(
     LearnerBuffers &buffer_data,
     const long int batch_size)
 {
-    cudaMalloc(&buffer_data.raw_input_buffer, batch_size * 47 * sizeof(uint64_t));
-    cudaMalloc(&buffer_data.float_input_buffer, batch_size * n_bytes_input * sizeof(float));
+    cudaMalloc(&buffer_data.float_input_buffer, batch_size * n_bytes_battle * sizeof(float));
+    cudaMalloc(&buffer_data.value_data_buffer, batch_size * 2 * sizeof(float));
+    cudaMalloc(&buffer_data.joined_policy_buffer, batch_size * 18 * sizeof(float));
+    cudaMalloc(&buffer_data.joined_policy_index_buffer, batch_size * 18 * sizeof(uint32_t));
 }
 
-void dealloc_buffers(
+void CUDACommon::dealloc_buffers(
     LearnerBuffers &buffer_data)
 {
-    cudaFree(buffer_data.raw_input_buffer);
     cudaFree(buffer_data.float_input_buffer);
+    cudaFree(buffer_data.value_data_buffer);
+    cudaFree(buffer_data.joined_policy_buffer);
+    cudaFree(buffer_data.joined_policy_index_buffer);
 }
 
-void setup_rng(const int n)
+void CUDACommon::copy_game_to_sample_buffer(
+    LearnerBuffers &sample_buffers,
+    const ActorBuffers &actor_buffers,
+    const int start_index,
+    const int count,
+    const int max_index)
 {
-    srand(time(0));
-    int seed = rand();
-    // blocks, 1 thread each
-    __setup_kernel<<<n, 1>>>(seed);
+    // Kernels::convert_battle_bytes_to_floats<<<count, 32>>>(
+    //     &sample_buffers.float_input_buffer[start_index],
+    //     actor_buffers.raw_input_buffer);
+    // memcpy(sample_buffers.value_data_buffer, actor_buffers.value_data_buffer, 2 * c);
+}
+
+void CUDACommon::copy_sample_to_learner_buffer(
+        LearnerBuffers learner_buffer,
+        LearnerBuffers sample_buffer,
+        const int start_index,
+        const int range,
+        const int n_samples)
+{
 }

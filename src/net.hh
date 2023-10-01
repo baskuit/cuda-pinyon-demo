@@ -16,7 +16,8 @@ public:
 
     void to(const torch::Device &device)
     {
-        static_cast<torch::nn::Module *>(this)->to(device);
+        fc->to(device);
+        // static_cast<torch::nn::Module *>(this)->to(device);
         this->device = device;
     }
 
