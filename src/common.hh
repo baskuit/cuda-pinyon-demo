@@ -33,8 +33,15 @@ namespace CUDACommon
         LearnerBuffers &buffer_data,
         const long int batch_size);
 
+    void alloc_actor_buffers(
+        ActorBuffers &buffer_data,
+        const long int batch_size);
+
     void dealloc_buffers(
         LearnerBuffers &buffer_data);
+
+    void dealloc_actor_buffers(
+        ActorBuffers &buffer_data);
 
     void copy_game_to_sample_buffer(
         LearnerBuffers &sample_buffers,

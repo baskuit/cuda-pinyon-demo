@@ -128,7 +128,7 @@ struct Training
 
     Training(const Training &) = delete;
 
-    void actor_store(const HostBuffers &actor_buffers, const int count)
+    void actor_store(const PinnedActorBuffers &actor_buffers, const int count)
     {
         const uint64_t s = sample_index.fetch_add(count);
         const int sample_index_first = s % sample_buffer_size;
@@ -144,10 +144,6 @@ struct Training
         {
             std::cout << "actor rate: " << rate << " count: " << count << std::endl;
         }
-
-        // HostBuffers new_buffers{1000};
-
-        // memset(new_buffers.raw_input_buffer, 11, 50 * 8);
 
         CUDACommon::copy_game_to_sample_buffer(
             sample_buffers,
@@ -173,7 +169,7 @@ struct Training
         // most samples possible per game
         const int max_samples = 500;
         // current index on actor buffer
-        HostBuffers buffers{max_samples};
+        PinnedActorBuffers buffers{max_samples};
         int buffer_index = 0;
 
         Types::PRNG device{};
@@ -187,24 +183,11 @@ struct Training
         {
             if (state.is_terminal())
             {
-
-                for (int i = 0; i < 47; ++i)
+                for (int i = 0; i < buffer_index; ++i)
                 {
-                    std::cout << (int)(buffers.raw_input_buffer[i] >> 56) << ' ';
+                    buffers.value_data_buffer[2 * i + 1] = state.payoff.get_row_value().get();
                 }
-                std::cout << std::endl;
-
                 actor_store(buffers, buffer_index);
-
-                // sleep(5);
-
-                for (int i = 0; i < 376; ++i)
-                {
-                    std::cout << sample_buffers.float_input_buffer[i] << ' ';
-                }
-                std::cout << std::endl;
-                return;
-
                 buffer_index = 0;
                 state = Types::State{device.get_seed()};
                 state.randomize_transition(device);
@@ -244,20 +227,20 @@ struct Training
                     reinterpret_cast<float *>(col_strategy.data()),
                     cols * 4);
                 // getting indices
-                auto get_index_from_action = [](uint8_t *bytes, uint8_t choice, uint8_t col_offset = 1)
+                auto get_index_from_action = [](const uint8_t *bytes, const uint8_t choice, const uint8_t col_offset = 0)
                 {
                     uint8_t type = choice & 3;
                     uint8_t data = choice >> 2;
                     if (type == 1)
                     {
                         // pkmn
-                        uint8_t slot = bytes[42069 + data];
-                        int dex = bytes[24 * slot + 42069];
+                        uint8_t slot = bytes[176 + data - 1 + col_offset];
+                        int dex = bytes[24 * (slot - 1) + 23 + col_offset];
                         return dex;
                     }
                     else
                     {
-                        int moveid = bytes[2 * data + 42069];
+                        int moveid = bytes[2 * (data - 1) + 10 + col_offset];
                         return moveid + 151;
                     }
                 };
@@ -267,7 +250,7 @@ struct Training
                 }
                 for (int i = 0; i < cols; ++i)
                 {
-                    buffers.joined_policy_index_buffer[buffer_index * 18 + 9 + i] = get_index_from_action(state.battle.bytes, state.col_actions[i].get(), 1);
+                    buffers.joined_policy_index_buffer[buffer_index * 18 + 9 + i] = get_index_from_action(state.battle.bytes, state.col_actions[i].get(), 184);
                 }
                 ++buffer_index;
             }
@@ -329,7 +312,7 @@ int main()
     Training<Net> training_workspace{sample_buffer_size, learner_minibatch_size};
     training_workspace.train = false;
 
-    training_workspace.start(1);
+    training_workspace.start(6);
 
     return 0;
 }

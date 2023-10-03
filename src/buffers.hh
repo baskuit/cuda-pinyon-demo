@@ -44,26 +44,20 @@ struct DeviceBuffers : LearnerBuffers
 };
 
 // Buffers local to actor threads for storing samples for training game in-progress
-struct HostBuffers : ActorBuffers
+struct PinnedActorBuffers : ActorBuffers
 {
-    std::vector<uint64_t> raw_input_vector{};
-    std::vector<float> value_data_vector{};
-    std::vector<float> joined_policy_vector{};
-    std::vector<uint32_t> joined_policy_index_vector{};
+    PinnedActorBuffers() {}
 
-    HostBuffers(const int size)
+    PinnedActorBuffers(const int size)
     {
-        raw_input_vector.resize(size * 47);
-        value_data_vector.resize(size * 2);
-        joined_policy_vector.resize(size * 18);
-        joined_policy_index_vector.resize(size * 18);
-        static_cast<ActorBuffers &>(*this) = ActorBuffers{
-            raw_input_vector.data(),
-            value_data_vector.data(),
-            joined_policy_vector.data(),
-            joined_policy_index_vector.data()};
+        CUDACommon::alloc_actor_buffers(*this, size);
     }
 
-    HostBuffers(const HostBuffers &) = delete;
-    HostBuffers &operator=(const HostBuffers &) = delete;
+    ~PinnedActorBuffers()
+    {
+        CUDACommon::dealloc_actor_buffers(*this);
+    }
+
+    PinnedActorBuffers(const PinnedActorBuffers &) = delete;
+    PinnedActorBuffers &operator=(const PinnedActorBuffers &) = delete;
 };

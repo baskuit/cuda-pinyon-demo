@@ -65,7 +65,7 @@ struct FlatSearch : Types
             Types::State &state,
             Types::Model &model)
         {
-            model = typename Types::Model{0};
+            // model = typename Types::Model{0};
             depth = 0;
             current_index = 0;
 
