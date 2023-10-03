@@ -14,14 +14,15 @@ using BrokenTypeList = DefaultTypes<
     pkmn_choice,                   // action type for battles
     std::array<uint8_t, log_size>, // observation type after commiting actions
     bool,                          // transition probabilities are not return by this configuration of engine (see 'calc' and 'chance' flags)
-    ConstantSum<1, 1>::Value>;
+    ConstantSum<1, 1>::Value,
+    A<9>::Array>;
 
 // shadow old vector type with libpkmn interface friendly type. the battles native 'get_actions' method expects a c style array.
 // also shadow `TypeList` to fix the reflexive type declaration. Note: this declaration is not actually used in this example, but it's interface proper.
 struct FixedTypeList : BrokenTypeList
 {
-    using VectorAction = A<9>::Array<BrokenTypeList::Action>;
-    using TypeList = FixedTypeList;
+    // using VectorAction = A<9>::Array<BrokenTypeList::Action>;
+    // using TypeList = FixedTypeList;
     // TODO 64bit strategies for smaller matrix stats!. Instead of 32bit x 9
 };
 
@@ -71,7 +72,6 @@ struct BattleTypes : TypeList
             // offset copy probably slower
             log_options = {this->obs.get().data(), log_size};
             pkmn_gen1_battle_options_set(&options, &log_options, NULL, NULL);
-            // result = other.result;
         }
 
         State& operator=(const State &other)
@@ -79,15 +79,9 @@ struct BattleTypes : TypeList
             this->row_actions = other.row_actions;
             this->col_actions = other.col_actions;
             this->terminal = other.terminal;
-            // this->obs = other.obs;
-            // this->prob = other.prob;
-
-            // memcpy(battle.bytes, other.battle.bytes, 384 - 8); // don't need seed
             memcpy(battle.bytes, other.battle.bytes, 384);
-            // offset copy probably slower
             log_options = {this->obs.get().data(), log_size};
             pkmn_gen1_battle_options_set(&options, &log_options, NULL, NULL);
-            // result = other.result;
             return *this;
         }
 

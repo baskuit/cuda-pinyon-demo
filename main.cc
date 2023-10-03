@@ -18,8 +18,8 @@ struct Net
 #endif
 
 // Pinyon type list for the entire program: Single threaded search on battles using Monte-Carlo eval.
-using Types = TreeBandit<Exp3<EmptyModel<BattleTypes>>, FlatNodes>;
-// using Types = FlatSearch<Exp3<EmptyModel<BattleTypes>>>;
+// using Types = TreeBandit<Exp3<EmptyModel<BattleTypes>>, FlatNodes>;
+using Types = FlatSearch<Exp3<MonteCarloModel<BattleTypes>>>;
 
 // Need Types defined first
 // #include "./src/scripts.hh"
@@ -128,16 +128,15 @@ struct Training
 
     Training(const Training &) = delete;
 
-    void actor_store(HostBuffers &actor_buffers, const int count)
+    void actor_store(const HostBuffers &actor_buffers, const int count)
     {
-        const int sample_index_last = sample_index.fetch_add(count) % sample_buffer_size;
-        if (sample_index > sample_buffer_size)
+        const uint64_t s = sample_index.fetch_add(count);
+        const int sample_index_first = s % sample_buffer_size;
+        if (s > sample_buffer_size)
         {
             train = true;
         }
-        const int sample_index_first = sample_index_last - count;
-
-        // if sample
+        const int sample_index_last = (sample_index_first + count) % sample_buffer_size;
 
         float rate = actor_metric.update_and_get_rate(count);
 
@@ -146,11 +145,15 @@ struct Training
             std::cout << "actor rate: " << rate << " count: " << count << std::endl;
         }
 
+        // HostBuffers new_buffers{1000};
+
+        // memset(new_buffers.raw_input_buffer, 11, 50 * 8);
+
         CUDACommon::copy_game_to_sample_buffer(
             sample_buffers,
             actor_buffers,
             sample_index_first,
-            actor_buffers.size,
+            count,
             sample_buffer_size);
     }
 
@@ -184,19 +187,36 @@ struct Training
         {
             if (state.is_terminal())
             {
+
+                for (int i = 0; i < 47; ++i)
+                {
+                    std::cout << (int)(buffers.raw_input_buffer[i] >> 56) << ' ';
+                }
+                std::cout << std::endl;
+
                 actor_store(buffers, buffer_index);
+
+                // sleep(5);
+
+                for (int i = 0; i < 376; ++i)
+                {
+                    std::cout << sample_buffers.float_input_buffer[i] << ' ';
+                }
+                std::cout << std::endl;
+                return;
+
                 buffer_index = 0;
                 state = Types::State{device.get_seed()};
                 state.randomize_transition(device);
             }
 
-            Types::MatrixNode root{};
+            // Types::MatrixNode root{};
             const bool use_full_search = device.uniform() < full_search_prob;
             const size_t iterations = use_full_search ? full_iterations : partial_iterations;
-            search.run_for_iterations(iterations, device, state, model, root);
-            // search.run_for_iterations(iterations, device, state, model);
-            // const Types::MatrixStats &stats = search.matrix_stats[0];
-            const Types::MatrixStats &stats = root.stats;
+            // search.run_for_iterations(iterations, device, state, model, root);
+            search.run_for_iterations(iterations, device, state, model);
+            const Types::MatrixStats &stats = search.matrix_stats[0];
+            // const Types::MatrixStats &stats = root.stats;
             search.get_empirical_strategies(stats, row_strategy, col_strategy);
             rows = state.row_actions.size();
             cols = state.col_actions.size();
@@ -223,15 +243,32 @@ struct Training
                     &buffers.joined_policy_buffer[buffer_index * 18 + 9],
                     reinterpret_cast<float *>(col_strategy.data()),
                     cols * 4);
-                // // joined actions
-                memcpy(
-                    &buffers.joined_actions_buffer[buffer_index * 18],
-                    reinterpret_cast<uint8_t *>(state.row_actions.data()),
-                    rows * 4);
-                memcpy(
-                    &buffers.joined_actions_buffer[buffer_index * 18 + 9],
-                    reinterpret_cast<uint8_t *>(state.col_actions.data()),
-                    cols * 4);
+                // getting indices
+                auto get_index_from_action = [](uint8_t *bytes, uint8_t choice, uint8_t col_offset = 1)
+                {
+                    uint8_t type = choice & 3;
+                    uint8_t data = choice >> 2;
+                    if (type == 1)
+                    {
+                        // pkmn
+                        uint8_t slot = bytes[42069 + data];
+                        int dex = bytes[24 * slot + 42069];
+                        return dex;
+                    }
+                    else
+                    {
+                        int moveid = bytes[2 * data + 42069];
+                        return moveid + 151;
+                    }
+                };
+                for (int i = 0; i < rows; ++i)
+                {
+                    buffers.joined_policy_index_buffer[buffer_index * 18 + i] = get_index_from_action(state.battle.bytes, state.row_actions[i].get(), 0);
+                }
+                for (int i = 0; i < cols; ++i)
+                {
+                    buffers.joined_policy_index_buffer[buffer_index * 18 + 9 + i] = get_index_from_action(state.battle.bytes, state.col_actions[i].get(), 1);
+                }
                 ++buffer_index;
             }
 
@@ -284,71 +321,15 @@ struct Training
     }
 };
 
-// bool foo(int x)
-// {
-
-//     using NewTypes = FlatSearch<Exp3<MonteCarloModel<BattleTypes>>>;
-//     Types::VectorInt a, b, c, d;
-//     const size_t state_seed = 121;
-//     {
-//         NewTypes::PRNG device{0};
-//         NewTypes::State state{state_seed};
-//         state.apply_actions(0, 0);
-//         state.get_actions();
-//         NewTypes::Model model{0};
-//         NewTypes::Search search{};
-//         search.run_for_iterations(x, device, state, model);
-//         a = search.matrix_stats[0].row_visits;
-//         b = search.matrix_stats[0].col_visits;
-
-//         math::print(search.matrix_stats[0].row_visits);
-//         math::print(search.matrix_stats[0].col_visits);
-//     };
-//     {
-//         Types::PRNG device{0};
-//         Types::State state{state_seed};
-//         state.apply_actions(0, 0);
-//         state.get_actions();
-//         Types::Model model{0};
-//         Types::Search search{};
-//         Types::MatrixNode root{};
-//         search.run_for_iterations(x, device, state, model, root);
-//         c = root.stats.row_visits;
-//         d = root.stats.col_visits;
-
-//         math::print(root.stats.row_visits);
-//         math::print(root.stats.col_visits);
-//     };
-
-//     if (a != c || b != d) {
-//         return false;
-//     }
-//     return true;
-// }
-
-void bar()
-{
-    // int x = 2;
-    // while (true) {
-    //     if (!foo(x)) {
-    //         break; //1, 3, 1, 2, 3, 6, 5, 5, 4
-    //     }
-    //     x++;
-    // }
-    // std::cout << x << std::endl;
-}
-
 int main()
-
 {
-
     const int sample_buffer_size = 1 << 16;
     const int learner_minibatch_size = 1024;
 
     Training<Net> training_workspace{sample_buffer_size, learner_minibatch_size};
     training_workspace.train = false;
 
-    training_workspace.start(6);
+    training_workspace.start(1);
 
     return 0;
 }

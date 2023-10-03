@@ -12,7 +12,7 @@ struct ActorBuffers
     uint64_t *raw_input_buffer;
     float *value_data_buffer;
     float *joined_policy_buffer;
-    uint8_t *joined_actions_buffer;
+    uint32_t *joined_policy_index_buffer;
 };
 
 struct LearnerBuffers

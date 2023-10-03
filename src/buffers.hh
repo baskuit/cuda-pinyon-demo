@@ -46,24 +46,22 @@ struct DeviceBuffers : LearnerBuffers
 // Buffers local to actor threads for storing samples for training game in-progress
 struct HostBuffers : ActorBuffers
 {
-    int size;
     std::vector<uint64_t> raw_input_vector{};
     std::vector<float> value_data_vector{};
     std::vector<float> joined_policy_vector{};
-    std::vector<uint8_t> joined_actions_vector{};
+    std::vector<uint32_t> joined_policy_index_vector{};
 
     HostBuffers(const int size)
-        : size{size}
     {
         raw_input_vector.resize(size * 47);
         value_data_vector.resize(size * 2);
         joined_policy_vector.resize(size * 18);
-        joined_actions_vector.resize(size * 18);
+        joined_policy_index_vector.resize(size * 18);
         static_cast<ActorBuffers &>(*this) = ActorBuffers{
             raw_input_vector.data(),
             value_data_vector.data(),
             joined_policy_vector.data(),
-            joined_actions_vector.data()};
+            joined_policy_index_vector.data()};
     }
 
     HostBuffers(const HostBuffers &) = delete;

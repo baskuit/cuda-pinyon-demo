@@ -70,3 +70,57 @@ size_t get_max_log()
     std::cout << max_log << std::endl;
     return max_log;
 }
+
+// bool foo(int x)
+// {
+
+//     using NewTypes = FlatSearch<Exp3<MonteCarloModel<BattleTypes>>>;
+//     Types::VectorInt a, b, c, d;
+//     const size_t state_seed = 121;
+//     {
+//         NewTypes::PRNG device{0};
+//         NewTypes::State state{state_seed};
+//         state.apply_actions(0, 0);
+//         state.get_actions();
+//         NewTypes::Model model{0};
+//         NewTypes::Search search{};
+//         search.run_for_iterations(x, device, state, model);
+//         a = search.matrix_stats[0].row_visits;
+//         b = search.matrix_stats[0].col_visits;
+
+//         math::print(search.matrix_stats[0].row_visits);
+//         math::print(search.matrix_stats[0].col_visits);
+//     };
+//     {
+//         Types::PRNG device{0};
+//         Types::State state{state_seed};
+//         state.apply_actions(0, 0);
+//         state.get_actions();
+//         Types::Model model{0};
+//         Types::Search search{};
+//         Types::MatrixNode root{};
+//         search.run_for_iterations(x, device, state, model, root);
+//         c = root.stats.row_visits;
+//         d = root.stats.col_visits;
+
+//         math::print(root.stats.row_visits);
+//         math::print(root.stats.col_visits);
+//     };
+
+//     if (a != c || b != d) {
+//         return false;
+//     }
+//     return true;
+// }
+
+// void bar()
+// {
+    // int x = 2;
+    // while (true) {
+    //     if (!foo(x)) {
+    //         break; //1, 3, 1, 2, 3, 6, 5, 5, 4
+    //     }
+    //     x++;
+    // }
+    // std::cout << x << std::endl;
+// }
