@@ -14,17 +14,19 @@ namespace Kernels
 {
     __global__ void convert_battle_bytes_to_floats(
         float *tgt,
-        const uint64_t *src)
+        const uint64_t *src,
+        const int start_index,
+        const int count,
+        const int max_index)
     {
-        int tid = blockIdx.x * blockDim.x + threadIdx.x;
-        if (tid < 376)
+        int game_index = blockIdx.x / 12;
+        int byte_index = (blockIdx.x % 12) * 32 + threadIdx.x;
+        if (byte_index < 376)
         {
-            const int input_index = tid / 8;
-            const int byte_index = tid % 8;
-            uint64_t byte_value = src[input_index];
+            uint64_t byte_value = src[game_index * 47 + byte_index / 8];
             byte_value >>= (64 - (byte_index * 8));
             byte_value &= 0xFF;
-            tgt[tid] = (float)byte_value;
+            tgt[(start_index + game_index) * 376 + byte_index] = (float)byte_value;
         }
     }
     __global__ void __sample_kernel(
@@ -95,17 +97,18 @@ void CUDACommon::copy_game_to_sample_buffer(
     const int count,
     const int max_index)
 {
-    // Kernels::convert_battle_bytes_to_floats<<<count, 32>>>(
-    //     &sample_buffers.float_input_buffer[start_index],
-    //     actor_buffers.raw_input_buffer);
+    Kernels::convert_battle_bytes_to_floats<<<count * 12, 32>>>(
+        sample_buffers.float_input_buffer,
+        actor_buffers.raw_input_buffer,
+        start_index, count, max_index);
     // memcpy(sample_buffers.value_data_buffer, actor_buffers.value_data_buffer, 2 * c);
 }
 
 void CUDACommon::copy_sample_to_learner_buffer(
-        LearnerBuffers learner_buffer,
-        LearnerBuffers sample_buffer,
-        const int start_index,
-        const int range,
-        const int n_samples)
+    LearnerBuffers learner_buffers,
+    LearnerBuffers sample_buffers,
+    const int start_index,
+    const int range,
+    const int n_samples)
 {
 }
