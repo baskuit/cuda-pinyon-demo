@@ -1,7 +1,5 @@
 #pragma once
 
-#include <torch/torch.h>
-
 namespace Options {
     const int hidden_size = 1 << 7;
     const int input_size = 376;

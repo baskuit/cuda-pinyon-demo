@@ -1,18 +1,28 @@
 #include <pinyon.hh>
 #include <pkmn.h>
-#include <torch/torch.h>
 
 #include <queue>
 
 #include "./src/battle.hh"
 #include "./src/common.hh"
 #include "./src/buffers.hh"
+#include "./src/search.hh"
+
+#ifdef ENABLE_TORCH
+#include <torch/torch.h>
 #include "./src/net.hh"
+#else
+struct Net
+{
+};
+#endif
 
 // Pinyon type list for the entire program: Single threaded search on battles using Monte-Carlo eval.
-using Types = TreeBandit<Exp3<EmptyModel<BattleTypes>>, DefaultNodes>;
+using Types = TreeBandit<Exp3<EmptyModel<BattleTypes>>, FlatNodes>;
+// using Types = FlatSearch<Exp3<EmptyModel<BattleTypes>>>;
+
 // Need Types defined first
-#include "./src/scripts.hh"
+// #include "./src/scripts.hh"
 
 /*
 Initializses buffers, contains synch mechanism for actor and learner threads
@@ -90,11 +100,12 @@ struct Training
                 --count;
             }
 
-                const int duration = std::chrono::duration_cast<std::chrono::milliseconds>(time - donation_times.front()).count();
-                if (duration == 0) {
-                    return 0;
-                }
-                return 1000 * (total_donations - donation_sizes.front()) / duration;
+            const float duration = std::chrono::duration_cast<std::chrono::milliseconds>(time - donation_times.front()).count();
+            if (duration == 0)
+            {
+                return 0;
+            }
+            return 1000 * (total_donations - donation_sizes.front()) / duration;
         }
     };
 
@@ -110,7 +121,9 @@ struct Training
           sample_buffer_size{sample_buffer_size},
           learner_buffer_size{learner_buffer_size}
     {
+#ifdef ENABLE_TORCH
         net.to(torch::kCUDA);
+#endif
     }
 
     Training(const Training &) = delete;
@@ -118,12 +131,13 @@ struct Training
     void actor_store(HostBuffers &actor_buffers, const int count)
     {
         const int sample_index_last = sample_index.fetch_add(count) % sample_buffer_size;
-        if (sample_index > sample_buffer_size) {
+        if (sample_index > sample_buffer_size)
+        {
             train = true;
         }
         const int sample_index_first = sample_index_last - count;
 
-        if sample
+        // if sample
 
         float rate = actor_metric.update_and_get_rate(count);
 
@@ -162,7 +176,7 @@ struct Training
         Types::PRNG device{};
         Types::State state{device.get_seed()};
         Types::Model model{0};
-        const Types::Search search{};
+        Types::Search search{};
         uint32_t rows, cols;
         Types::VectorReal row_strategy, col_strategy;
 
@@ -180,7 +194,10 @@ struct Training
             const bool use_full_search = device.uniform() < full_search_prob;
             const size_t iterations = use_full_search ? full_iterations : partial_iterations;
             search.run_for_iterations(iterations, device, state, model, root);
-            search.get_empirical_strategies(root.stats, row_strategy, col_strategy);
+            // search.run_for_iterations(iterations, device, state, model);
+            // const Types::MatrixStats &stats = search.matrix_stats[0];
+            const Types::MatrixStats &stats = root.stats;
+            search.get_empirical_strategies(stats, row_strategy, col_strategy);
             rows = state.row_actions.size();
             cols = state.col_actions.size();
             const int row_idx = device.random_int(rows);
@@ -195,7 +212,7 @@ struct Training
                     376);
                 // // value
                 search.get_empirical_value(
-                    root.stats,
+                    stats,
                     *reinterpret_cast<Types::Value *>(&buffers.value_data_buffer[2 * buffer_index]));
                 // // policy
                 memcpy(
@@ -227,6 +244,7 @@ struct Training
 
     void learner()
     {
+#ifdef ENABLE_TORCH
         torch::optim::SGD optimizer{net.parameters(), .001};
         torch::Tensor target = torch::zeros({learner_buffer_size, 1}).to(net.device);
         while (train)
@@ -247,6 +265,7 @@ struct Training
             float rate = leaner_metric.update_and_get_rate(learner_buffer_size);
             // std::cout << "learn rate: " << rate << std::endl;
         }
+#endif
     }
 
     void start(const int n_actor_threads)
@@ -265,15 +284,71 @@ struct Training
     }
 };
 
-int main()
+// bool foo(int x)
+// {
+
+//     using NewTypes = FlatSearch<Exp3<MonteCarloModel<BattleTypes>>>;
+//     Types::VectorInt a, b, c, d;
+//     const size_t state_seed = 121;
+//     {
+//         NewTypes::PRNG device{0};
+//         NewTypes::State state{state_seed};
+//         state.apply_actions(0, 0);
+//         state.get_actions();
+//         NewTypes::Model model{0};
+//         NewTypes::Search search{};
+//         search.run_for_iterations(x, device, state, model);
+//         a = search.matrix_stats[0].row_visits;
+//         b = search.matrix_stats[0].col_visits;
+
+//         math::print(search.matrix_stats[0].row_visits);
+//         math::print(search.matrix_stats[0].col_visits);
+//     };
+//     {
+//         Types::PRNG device{0};
+//         Types::State state{state_seed};
+//         state.apply_actions(0, 0);
+//         state.get_actions();
+//         Types::Model model{0};
+//         Types::Search search{};
+//         Types::MatrixNode root{};
+//         search.run_for_iterations(x, device, state, model, root);
+//         c = root.stats.row_visits;
+//         d = root.stats.col_visits;
+
+//         math::print(root.stats.row_visits);
+//         math::print(root.stats.col_visits);
+//     };
+
+//     if (a != c || b != d) {
+//         return false;
+//     }
+//     return true;
+// }
+
+void bar()
 {
+    // int x = 2;
+    // while (true) {
+    //     if (!foo(x)) {
+    //         break; //1, 3, 1, 2, 3, 6, 5, 5, 4
+    //     }
+    //     x++;
+    // }
+    // std::cout << x << std::endl;
+}
+
+int main()
+
+{
+
     const int sample_buffer_size = 1 << 16;
     const int learner_minibatch_size = 1024;
 
     Training<Net> training_workspace{sample_buffer_size, learner_minibatch_size};
     training_workspace.train = false;
 
-    training_workspace.start(8);
+    training_workspace.start(6);
 
     return 0;
 }
