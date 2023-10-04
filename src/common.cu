@@ -15,7 +15,6 @@
 namespace Kernels
 {
 
-
     __global__ void convert_battle_bytes_to_floats(
         float *tgt,
         const uint64_t *src,
@@ -35,47 +34,35 @@ namespace Kernels
         }
     }
 
-    __global__ void convert_action_bytes_to_indices(
-        uint32_t *tgt,
-        uint8_t *src,
-        const int start_index,
-        const int count,
-        const int max_index)
-    {
-        int action_index = threadIdx.x;
-        if (action_index < 18)
-        {
-        }
-    }
     __global__ void __sample_kernel(
         LearnerBuffers tgt,
         LearnerBuffers src,
-        const int block_size,
-        const int start_block_index,
-        const int n_blocks)
+        const int start,
+        const int count,
+        const int max_index,
+        const int n_samples)
     {
         const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-        const int block_index = (start_block_index + blockIdx.x) % n_blocks;
-        const int base_sample_index = block_index * block_size;
-
-        curandState state;
-        curand_init(clock64(), tid, 0, &state);
-
-        const int sample_index =
-            base_sample_index +
-            (int)(ceil((curand_uniform(&state) * (block_size + 1))) - 1);
-        memset(
-            tgt.float_input_buffer + tid * n_bytes_battle,
-            1.4, n_bytes_battle);
-        memcpy(
-            tgt.value_data_buffer + tid * 8,
-            src.value_data_buffer + base_sample_index * 8, 8);
-        memcpy(
-            tgt.joined_policy_buffer + tid * 18 * 4,
-            src.joined_policy_buffer + base_sample_index * 18 * 4, 18 * 4);
-        memcpy(
-            tgt.joined_policy_index_buffer + tid * 18 * 4,
-            src.joined_policy_index_buffer + base_sample_index * 18 * 4, 18 * 4);
+        if (tid < n_samples)
+        {
+            curandState state;
+            curand_init(clock64(), tid, 0, &state);
+            const int sample_index =
+                (start +
+                (int)(ceil((curand_uniform(&state) * count)) - 1)) % max_index;
+            memcpy(
+                tgt.float_input_buffer + tid * n_bytes_battle,
+                src.float_input_buffer + sample_index * n_bytes_battle, n_bytes_battle * sizeof(float));
+            memcpy(
+                tgt.value_data_buffer + tid * 2,
+                src.value_data_buffer + sample_index * 2, 8);
+            memcpy(
+                tgt.joined_policy_buffer + tid * 18,
+                src.joined_policy_buffer + sample_index * 18, 18 * 4);
+            memcpy(
+                tgt.joined_policy_index_buffer + tid * 18,
+                src.joined_policy_index_buffer + sample_index * 18, 18 * 4);
+        }
     }
 };
 
@@ -128,7 +115,7 @@ void CUDACommon::copy_game_to_sample_buffer(
             actor_buffers.joined_policy_index_buffer,
             18 * count_ * sizeof(uint32_t));
     }
-    cudaThreadSynchronize();
+    // cudaThreadSynchronize();
 }
 
 void CUDACommon::copy_sample_to_learner_buffer(
@@ -136,12 +123,13 @@ void CUDACommon::copy_sample_to_learner_buffer(
     LearnerBuffers sample_buffers,
     const int start_index,
     const int count,
+    const int max_index,
     const int n_samples)
 {
-    Kernels::__sample_kernel<<<n_samples, 1>>>(
+    Kernels::__sample_kernel<<<n_samples, 32>>>(
         learner_buffers,
         sample_buffers,
-        start_index, count, n_samples);
+        start_index, count, max_index, n_samples);
 }
 
 void CUDACommon::alloc_actor_buffers(

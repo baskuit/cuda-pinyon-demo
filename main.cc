@@ -18,7 +18,7 @@ struct Net
 #endif
 
 // Pinyon type list for the entire program: Single threaded search on battles using Monte-Carlo eval.
-// using Types = TreeBandit<Exp3<EmptyModel<BattleTypes>>, FlatNodes>;
+// using Types = TreeBandit<Exp3<MonteCarloModel<BattleTypes>>, FlatNodes>;
 using Types = FlatSearch<Exp3<MonteCarloModel<BattleTypes>>>;
 
 // Need Types defined first
@@ -110,7 +110,7 @@ struct Training
     };
 
     Metric actor_metric{100};
-    Metric leaner_metric{100};
+    Metric learn_metric{100};
 
     template <typename... Args>
     Training(
@@ -127,6 +127,8 @@ struct Training
     }
 
     Training(const Training &) = delete;
+
+    const int berth = 1 << 8;
 
     void actor_store(const PinnedActorBuffers &actor_buffers, const int count)
     {
@@ -155,13 +157,23 @@ struct Training
 
     void learner_fetch()
     {
-        int start_index, range;
+        const int center = sample_index.load();
+        const int low = (center + berth) % sample_buffer_size;
+        const int high = (center + sample_buffer_size - berth) % sample_buffer_size;
+        int range;
+        if (low < high) {
+            range = high - low;
+        } else {
+            range = sample_buffer_size - high + low;
+        }
+        std::cout << low << ' ' << center << ' ' << high << std::endl;
         CUDACommon::copy_sample_to_learner_buffer(
             learner_buffers,
             sample_buffers,
-            start_index,
+            low,
             range,
-            sample_buffer_size);
+            sample_buffer_size,
+            learner_buffer_size);
     };
 
     void actor()
@@ -281,9 +293,12 @@ struct Training
             torch::Tensor loss = mse(output.value, target);
             loss.backward();
             optimizer.step();
-            // cuda_memcpy_float32_device_to_host(x, training_pool_ptr->learner_buffers.float_input_buffer, 4 * 3);
-            float rate = leaner_metric.update_and_get_rate(learner_buffer_size);
-            // std::cout << "learn rate: " << rate << std::endl;
+            float rate = learn_metric.update_and_get_rate(1);
+            while (rate > 20) {
+                sleep(1);
+                rate = learn_metric.update_and_get_rate(0);
+            }
+            std::cout << "learn rate: " << rate << std::endl;
         }
 #endif
     }
@@ -307,10 +322,10 @@ struct Training
 int main()
 {
     const int sample_buffer_size = 1 << 16;
-    const int learner_minibatch_size = 1024;
+    const int learner_minibatch_size = 1 << 10;
 
     Training<Net> training_workspace{sample_buffer_size, learner_minibatch_size};
-    training_workspace.train = false;
+    // training_workspace.train = false;
 
     training_workspace.start(6);
 

@@ -36,7 +36,7 @@ struct NetOutput {
 class Net : public torch::nn::Module
 {
 public:
-    torch::Device device = torch::CUDA;
+    torch::Device device = torch::kCUDA;
     torch::nn::Linear fc{nullptr};
     torch::nn::Sequential tower{};
     torch::nn::Linear fc_value_pre{nullptr};
@@ -72,13 +72,13 @@ public:
         this->device = device;
     }
 
-        torch::Tensor forward(torch::Tensor x)
+        NetOutput forward(torch::Tensor x)
     {
         x = torch::relu(fc(x));
         x = tower->forward(x);
         torch::Tensor value = torch::sigmoid(fc_value(torch::relu(fc_value_pre(x))));
         torch::Tensor row_logits = fc_row_logits(torch::relu(fc_row_logits_pre(x)));
         torch::Tensor col_logits = fc_col_logits(torch::relu(fc_col_logits_pre(x)));
-        return value;
+        return {value, row_logits, col_logits};
     }
 };

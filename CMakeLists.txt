@@ -6,7 +6,7 @@ project(cuda-pinyon-demo)
 # packages                 
 find_package(CUDA REQUIRED)   
 
-option(ENABLE_TORCH_ "Enable Libtorch" OFF)
+option(ENABLE_TORCH_ "Enable Libtorch" ON)
 
 if(ENABLE_TORCH_)
     set(CMAKE_PREFIX_PATH "/home/user/Desktop/libtorch/")
@@ -35,5 +35,5 @@ target_link_libraries(main ${PROJECT_SOURCE_DIR}/extern/engine/zig-out/lib/libpk
 target_link_libraries(main common)
 if(ENABLE_TORCH_)
     target_link_libraries(main "${TORCH_LIBRARIES}")
-    target_compile_definitions(pinyon PUBLIC ENABLE_TORCH)
+    target_compile_definitions(main  PUBLIC ENABLE_TORCH)
 endif()

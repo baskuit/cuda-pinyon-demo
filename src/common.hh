@@ -54,6 +54,7 @@ namespace CUDACommon
         LearnerBuffers learner_buffer,
         const LearnerBuffers sample_buffer,
         const int start_index,
-        const int range,
-        const int n_samples);
+        const int count,
+        const int n_samples,
+        const int max_index);
 };
