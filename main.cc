@@ -343,22 +343,22 @@ struct Training
         {
             // learner_fetch();
 
-            // torch::Tensor float_input =
-            //     torch::from_blob(
-            //         learner_buffers.float_input_buffer,
-            //         {learner_buffer_size, n_bytes_battle}).to(net.device).clone()
-            //         .to(net.device);
+            torch::Tensor f_i =
+                torch::from_blob(
+                    learner_buffers.float_input_buffer,
+                    {learner_buffer_size, n_bytes_battle}).to(net.device).clone()
+                    .to(net.device);
             // torch::Tensor value_data =
             //     torch::from_blob(
             //         learner_buffers.value_data_buffer,
             //         {learner_buffer_size, 2}).to(net.device).clone()
             //         .to(net.device);
             // torch::Tensor value_target = value_data.index({"...", torch::indexing::Slice{0, 1, 1}});
-            // torch::Tensor joined_policy_indices =
-            //     torch::from_blob(
-            //         learner_buffers.joined_policy_index_buffer,
-            //         {learner_buffer_size, 18}, torch::kInt64).to(net.device).clone()
-            //         .to(net.device);
+            torch::Tensor jpi =
+                torch::from_blob(
+                    learner_buffers.joined_policy_index_buffer,
+                    {learner_buffer_size, 18}, torch::kInt64).to(net.device).clone()
+                    .to(net.device);
             // torch::Tensor joined_policy_target =
             //     torch::from_blob(
             //         learner_buffers.joined_policy_buffer,
@@ -371,8 +371,9 @@ struct Training
             //         {sample_buffer_size, 18}, torch::kInt64)
             //         .to(net.device);
 
-            // std::cout << "sample joined policy buffer " << std::endl;
-            // pt(sample__);
+            std::cout << "learner jpi " << std::endl;
+            torch::cuda::synchronize();
+            pt(jpi);
 
             torch::Tensor float_input = torch::rand({learner_buffer_size, 376}).to(torch::kCUDA);
             torch::Tensor value_target = torch::rand({learner_buffer_size, 1}).to(torch::kCUDA);
@@ -385,7 +386,7 @@ struct Training
             row_policy_target /= row_policy_target.norm(1, {1}, true);
             col_policy_target /= col_policy_target.norm(1, {1}, true);
 
-            auto output = net.forward(float_input, joined_policy_indices);
+            auto output = net.forward(float_input, jpi);
             optimizer.zero_grad();
             torch::Tensor value_loss =
                 mse(output.value, value_target);
