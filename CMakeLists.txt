@@ -35,5 +35,5 @@ target_link_libraries(main ${PROJECT_SOURCE_DIR}/extern/engine/zig-out/lib/libpk
 target_link_libraries(main common)
 if(ENABLE_TORCH_)
     target_link_libraries(main "${TORCH_LIBRARIES}")
-    target_compile_definitions(main  PUBLIC ENABLE_TORCH)
+    target_compile_definitions(main PUBLIC ENABLE_TORCH)
 endif()

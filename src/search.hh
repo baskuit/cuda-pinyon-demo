@@ -137,8 +137,8 @@ struct FlatSearch : Types
             hashValue = hashValue * 31 + col_idx;
 
             // Hash the uint64_t (hash)
-            uint32_t lowPart = static_cast<uint32_t>(hash);
-            uint32_t highPart = static_cast<uint32_t>(hash >> 32);
+            int64_t lowPart = static_cast<int64_t>(hash);
+            int64_t highPart = static_cast<int64_t>(hash >> 32);
 
             hashValue = hashValue * 31 + lowPart;
             hashValue = hashValue * 31 + highPart;

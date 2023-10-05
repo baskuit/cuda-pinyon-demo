@@ -1,6 +1,9 @@
 #pragma once
 
-namespace Options {
+#include <torch/torch.h>
+
+namespace Options
+{
     const int hidden_size = 1 << 7;
     const int input_size = 376;
     const int outer_size = 1 << 5;
@@ -20,17 +23,32 @@ public:
         fc2 = register_module("fc2", torch::nn::Linear(Options::hidden_size, Options::hidden_size));
     }
 
-    torch::Tensor forward(torch::Tensor x)
+    torch::Tensor forward(torch::Tensor input)
     {
-        torch::Tensor residual = x.clone();
-        x = torch::relu(fc2(torch::relu(fc1(x)))) + residual;
-        return x;
+        torch::Tensor residual = input.clone();
+        input = torch::relu(fc2(torch::relu(fc1(input)))) + residual;
+        return input;
     }
 };
 
-struct NetOutput {
-    torch::Tensor value, row_logits, col_logits;
+struct NetOutput
+{
+    torch::Tensor value, row_policy, col_policy;
 };
+
+void pt(torch::Tensor tensor)
+{
+    int a = tensor.size(0);
+    int b = tensor.size(1);
+    for (int i = 0; i < a; ++i)
+    {
+        for (int j = 0; j < b; ++j)
+        {
+            std::cout << tensor[i][j].item<float>() << " ";
+        }
+        std::cout << std::endl;
+    }
+}
 
 // underlying libtorch model. no game logic or anything yet
 class Net : public torch::nn::Module
@@ -72,13 +90,33 @@ public:
         this->device = device;
     }
 
-        NetOutput forward(torch::Tensor x)
+    NetOutput forward(torch::Tensor input, torch::Tensor joined_policy_indices)
     {
-        x = torch::relu(fc(x));
-        x = tower->forward(x);
-        torch::Tensor value = torch::sigmoid(fc_value(torch::relu(fc_value_pre(x))));
-        torch::Tensor row_logits = fc_row_logits(torch::relu(fc_row_logits_pre(x)));
-        torch::Tensor col_logits = fc_col_logits(torch::relu(fc_col_logits_pre(x)));
-        return {value, row_logits, col_logits};
+        // pt(input.index({"...", torch::indexing::Slice{0, 24, 1}}));
+        torch::Tensor tower_ = tower->forward(torch::relu(fc(input)));
+        // torch::Tensor a = torch::randint(1, 100, {64, 19}).to(this->device);
+        torch::Tensor row_logits = fc_row_logits(torch::relu(fc_row_logits_pre(tower_.clone().to(device))));
+        torch::Tensor col_logits = fc_col_logits(torch::relu(fc_col_logits_pre(tower_.clone().to(device))));
+        torch::Tensor row_policy_indices = joined_policy_indices.index({"...", torch::indexing::Slice{0, 9, 1}});
+        torch::Tensor col_policy_indices = joined_policy_indices.index({"...", torch::indexing::Slice{9, 18, 1}});
+        torch::Tensor row_logits_picked = torch::gather(row_logits, 1, row_policy_indices);
+        torch::Tensor col_logits_picked = torch::gather(col_logits, 1, col_policy_indices);
+        torch::Tensor r = torch::softmax(row_logits_picked, 1);
+        torch::Tensor c = torch::softmax(col_logits_picked, 1);
+        // std::cout << "row & col policy index tensors:" << std::endl;
+        // pt(joined_policy_indices);
+        // pt(row_policy_indices);
+        // pt(col_policy_indices);
+        // pt(row_logits_picked);
+        // pt(col_logits_picked);
+        pt(row_logits);
+        pt(col_logits);
+        torch::Tensor value = torch::sigmoid(fc_value(torch::relu(fc_value_pre(tower_))));
+        // return {value, row_logits, col_logits};
+
+        return {
+            value,
+            torch::softmax(torch::gather(row_logits, 1, row_policy_indices), 1),
+            torch::softmax(torch::gather(col_logits, 1, col_policy_indices), 1)};
     }
 };

@@ -18,8 +18,8 @@ struct Net
 #endif
 
 // Pinyon type list for the entire program: Single threaded search on battles using Monte-Carlo eval.
-// using Types = TreeBandit<Exp3<MonteCarloModel<BattleTypes>>, FlatNodes>;
-using Types = FlatSearch<Exp3<MonteCarloModel<BattleTypes>>>;
+using Types = TreeBandit<Exp3<MonteCarloModel<BattleTypes>>, FlatNodes>;
+// using Types = FlatSearch<Exp3<MonteCarloModel<BattleTypes>>>;
 
 // Need Types defined first
 // #include "./src/scripts.hh"
@@ -128,7 +128,7 @@ struct Training
 
     Training(const Training &) = delete;
 
-    const int berth = 1 << 8;
+    const int berth = 1 << 5;
 
     void actor_store(const PinnedActorBuffers &actor_buffers, const int count)
     {
@@ -136,6 +136,10 @@ struct Training
         const int sample_index_first = s % sample_buffer_size;
         if (s > sample_buffer_size)
         {
+            if (!train)
+            {
+                std::cout << "TRAINING ENABLED" << std::endl;
+            }
             train = true;
         }
         const int sample_index_last = (sample_index_first + count) % sample_buffer_size;
@@ -157,16 +161,19 @@ struct Training
 
     void learner_fetch()
     {
-        const int center = sample_index.load();
+        const int center = (sample_index.load()) % sample_buffer_size;
         const int low = (center + berth) % sample_buffer_size;
         const int high = (center + sample_buffer_size - berth) % sample_buffer_size;
         int range;
-        if (low < high) {
+        if (low < high)
+        {
             range = high - low;
-        } else {
+        }
+        else
+        {
             range = sample_buffer_size - high + low;
         }
-        std::cout << low << ' ' << center << ' ' << high << std::endl;
+        // std::cout << low << ' ' << center << ' ' << high << std::endl;
         CUDACommon::copy_sample_to_learner_buffer(
             learner_buffers,
             sample_buffers,
@@ -188,11 +195,24 @@ struct Training
         Types::State state{device.get_seed()};
         Types::Model model{0};
         Types::Search search{};
-        uint32_t rows, cols;
+        int rows, cols;
+        Types::Value value;
         Types::VectorReal row_strategy, col_strategy;
 
         while (generate_samples)
         {
+
+            // rows = state.row_actions.size();
+            // cols = state.col_actions.size();
+            // if (rows == 1 && cols == 1)
+            // {
+            //     state.apply_actions(
+            //         state.row_actions[0],
+            //         state.col_actions[0]);
+            //     state.get_actions();
+            //     continue;
+            // }
+
             if (state.is_terminal())
             {
                 for (int i = 0; i < buffer_index; ++i)
@@ -203,18 +223,23 @@ struct Training
                 buffer_index = 0;
                 state = Types::State{device.get_seed()};
                 state.randomize_transition(device);
+                // rows = state.row_actions.size();
+                // cols = state.col_actions.size();
             }
 
-            // Types::MatrixNode root{};
-            const bool use_full_search = device.uniform() < full_search_prob;
-            const size_t iterations = use_full_search ? full_iterations : partial_iterations;
-            // search.run_for_iterations(iterations, device, state, model, root);
-            search.run_for_iterations(iterations, device, state, model);
-            const Types::MatrixStats &stats = search.matrix_stats[0];
-            // const Types::MatrixStats &stats = root.stats;
-            search.get_empirical_strategies(stats, row_strategy, col_strategy);
+
             rows = state.row_actions.size();
             cols = state.col_actions.size();
+            Types::MatrixNode root{};
+            const bool use_full_search = device.uniform() < full_search_prob;
+            const size_t iterations = use_full_search ? full_iterations : partial_iterations;
+            // search.run_for_iterations(iterations, device, state, model);
+            search.run_for_iterations(iterations, device, state, model, root);
+            // const Types::MatrixStats &stats = search.matrix_stats[0];
+            const Types::MatrixStats &stats = root.stats;
+            search.get_empirical_strategies(stats, row_strategy, col_strategy);
+            search.get_empirical_value(stats, value);
+
             const int row_idx = device.random_int(rows);
             const int col_idx = device.random_int(cols);
 
@@ -225,11 +250,9 @@ struct Training
                     &buffers.raw_input_buffer[buffer_index * 47],
                     reinterpret_cast<const uint64_t *>(state.battle.bytes),
                     376);
-                // // value
-                search.get_empirical_value(
-                    stats,
-                    *reinterpret_cast<Types::Value *>(&buffers.value_data_buffer[2 * buffer_index]));
-                // // policy
+                // value
+                buffers.value_data_buffer[buffer_index * 2] = value.get_row_value().get();
+                // policy
                 memcpy(
                     &buffers.joined_policy_buffer[buffer_index * 18],
                     reinterpret_cast<float *>(row_strategy.data()),
@@ -245,25 +268,43 @@ struct Training
                     uint8_t data = choice >> 2;
                     if (type == 1)
                     {
-                        // pkmn
+                        uint8_t moveid = bytes[2 * (data - 1) + 10 + col_offset];
+                        return int64_t{moveid};
+                    }
+                    else if (type == 2)
+                    {
                         uint8_t slot = bytes[176 + data - 1 + col_offset];
-                        int dex = bytes[24 * (slot - 1) + 23 + col_offset];
-                        return dex;
+                        int dex = bytes[24 * (slot - 1) + 21 + col_offset];
+                        return int64_t{dex + 165};
                     }
                     else
                     {
-                        int moveid = bytes[2 * (data - 1) + 10 + col_offset];
-                        return moveid + 151;
+                        return int64_t{0}; // TODO fix what is this?
                     }
                 };
-                for (int i = 0; i < rows; ++i)
+                for (int i = 0; i < 9; ++i)
                 {
-                    buffers.joined_policy_index_buffer[buffer_index * 18 + i] = get_index_from_action(state.battle.bytes, state.row_actions[i].get(), 0);
+                    if (i < rows)
+                    {
+                        buffers.joined_policy_index_buffer[buffer_index * 18 + i] = get_index_from_action(state.battle.bytes, state.row_actions[i].get(), 0);
+                    }
+                    else
+                    {
+                        buffers.joined_policy_index_buffer[buffer_index * 18 + i] = 77; // TODO change to real dummy
+                    }
                 }
-                for (int i = 0; i < cols; ++i)
+                for (int i = 0; i < 9; ++i)
                 {
-                    buffers.joined_policy_index_buffer[buffer_index * 18 + 9 + i] = get_index_from_action(state.battle.bytes, state.col_actions[i].get(), 184);
+                    if (i < cols)
+                    {
+                        buffers.joined_policy_index_buffer[buffer_index * 18 + 9 + i] = get_index_from_action(state.battle.bytes, state.col_actions[i].get(), 184);
+                    }
+                    else
+                    {
+                        buffers.joined_policy_index_buffer[buffer_index * 18 + 9 + i] = 77;
+                    }
                 }
+
                 ++buffer_index;
             }
 
@@ -274,31 +315,80 @@ struct Training
         }
     }
 
+    void print(torch::Tensor t)
+    {
+        for (auto d : t.sizes())
+        {
+            std::cout << d << ' ';
+        }
+        std::cout << std::endl;
+    }
+
     void learner()
     {
 #ifdef ENABLE_TORCH
         torch::optim::SGD optimizer{net.parameters(), .001};
-        torch::Tensor target = torch::zeros({learner_buffer_size, 1}).to(net.device);
+        torch::nn::MSELoss mse{};
+        torch::nn::CrossEntropyLoss cel{};
+
+        while (!train)
+        {
+            sleep(1);
+        }
+
         while (train)
         {
             learner_fetch();
-            torch::Tensor input =
+            torch::cuda::synchronize();
+
+            torch::Tensor float_input =
                 torch::from_blob(
                     learner_buffers.float_input_buffer,
                     {learner_buffer_size, n_bytes_battle})
                     .to(net.device);
-            auto output = net.forward(input);
-            torch::nn::MSELoss mse{};
+            torch::Tensor value_data =
+                torch::from_blob(
+                    learner_buffers.value_data_buffer,
+                    {learner_buffer_size, 2})
+                    .to(net.device);
+            torch::Tensor value_target = value_data.index({"...", torch::indexing::Slice{0, 1, 1}});
+            torch::Tensor joined_policy_indices =
+                torch::from_blob(
+                    learner_buffers.joined_policy_index_buffer,
+                    {learner_buffer_size, 18}, torch::kInt64)
+                    .to(net.device);
+            torch::Tensor joined_policy_target =
+                torch::from_blob(
+                    learner_buffers.joined_policy_buffer,
+                    {learner_buffer_size, 18})
+                    .to(net.device);
+            torch::cuda::synchronize();
+            // torch::Tensor old_god =
+            //     torch::from_blob(
+            //         sample_buffers.joined_policy_index_buffer,
+            //         {sample_buffer_size, 18}, torch::kInt64)
+            //         .to(net.device);
+
+            // std::cout << "sample joined policy buffer " << std::endl;
+            // pt(old_god);
+
+            auto output = net.forward(float_input, joined_policy_indices);
             optimizer.zero_grad();
-            torch::Tensor loss = mse(output.value, target);
+            torch::Tensor loss =
+                mse(output.value, value_target);
+            // + cel(output.row_policy, joined_policy_target.index({"...", torch::indexing::Slice{0, 9, 1}}))
+            // + cel(output.col_policy, joined_policy_target.index({"...", torch::indexing::Slice{8, 18, 1}}));
+            std::cout << "loss: " << loss.item().toFloat() << std::endl;
             loss.backward();
             optimizer.step();
             float rate = learn_metric.update_and_get_rate(1);
-            while (rate > 20) {
+
+            while (rate > 20)
+            {
                 sleep(1);
                 rate = learn_metric.update_and_get_rate(0);
             }
-            std::cout << "learn rate: " << rate << std::endl;
+            // std::cout << "learn rate: " << rate << std::endl;
         }
 #endif
     }
@@ -321,13 +411,13 @@ struct Training
 
 int main()
 {
-    const int sample_buffer_size = 1 << 16;
-    const int learner_minibatch_size = 1 << 10;
+    const int sample_buffer_size = 1 << 8;
+    const int learner_minibatch_size = 1 << 6;
 
     Training<Net> training_workspace{sample_buffer_size, learner_minibatch_size};
-    // training_workspace.train = false;
+    training_workspace.train = false;
 
-    training_workspace.start(6);
+    training_workspace.start(4);
 
     return 0;
 }
