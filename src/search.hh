@@ -69,6 +69,7 @@ struct FlatSearch : Types
             depth = 0;
             current_index = 0;
 
+            // side by side: was_seen and is_expanded (state, e.g. expanded vectors)
             bool *info_ptr = &info[2 * current_index];
 
             while (*info_ptr && !state.is_terminal() && depth < max_iteration_depth)
@@ -123,6 +124,7 @@ struct FlatSearch : Types
 
             for (int d = 0; d < depth; ++d)
             {
+                outcomes[d].value = leaf_output.value;
                 this->update_matrix_stats(matrix_stats[matrix_indices[d]], outcomes[d]);
             }
         }

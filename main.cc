@@ -75,6 +75,8 @@ struct Training
     // simple class to count the samples/sec for both actors and learner.
     struct Metric
     {
+        std::mutex mtx{};
+
         const int max_donations;
         Metric(const int max_donations) : max_donations{max_donations}
         {
@@ -86,6 +88,7 @@ struct Training
 
         float update_and_get_rate(const int donation_size)
         {
+            mtx.lock();
             int count = donation_sizes.size() + 1;
             total_donations += donation_size;
             auto time = std::chrono::high_resolution_clock::now();
@@ -103,9 +106,12 @@ struct Training
             const float duration = std::chrono::duration_cast<std::chrono::milliseconds>(time - donation_times.front()).count();
             if (duration == 0)
             {
+                mtx.unlock();
                 return 0;
             }
-            return 1000 * (total_donations - donation_sizes.front()) / duration;
+            const float answer = 1000 * (total_donations - donation_sizes.front()) / duration;
+            mtx.unlock();
+            return answer;
         }
     };
 
@@ -202,17 +208,6 @@ struct Training
         while (generate_samples)
         {
 
-            // rows = state.row_actions.size();
-            // cols = state.col_actions.size();
-            // if (rows == 1 && cols == 1)
-            // {
-            //     state.apply_actions(
-            //         state.row_actions[0],
-            //         state.col_actions[0]);
-            //     state.get_actions();
-            //     continue;
-            // }
-
             if (state.is_terminal())
             {
                 for (int i = 0; i < buffer_index; ++i)
@@ -223,13 +218,22 @@ struct Training
                 buffer_index = 0;
                 state = Types::State{device.get_seed()};
                 state.randomize_transition(device);
-                // rows = state.row_actions.size();
-                // cols = state.col_actions.size();
             }
-
 
             rows = state.row_actions.size();
             cols = state.col_actions.size();
+            row_strategy.clear();
+            col_strategy.clear();
+
+            if (rows == 1 && cols == 1)
+            {
+                state.apply_actions(
+                    state.row_actions[0],
+                    state.col_actions[0]);
+                state.get_actions();
+                continue;
+            }
+
             Types::MatrixNode root{};
             const bool use_full_search = device.uniform() < full_search_prob;
             const size_t iterations = use_full_search ? full_iterations : partial_iterations;
@@ -308,10 +312,9 @@ struct Training
                 ++buffer_index;
             }
 
+            // anyway:
             state.apply_actions(state.row_actions[row_idx], state.col_actions[col_idx]);
             state.get_actions();
-            row_strategy.clear();
-            col_strategy.clear();
         }
     }
 
@@ -326,7 +329,7 @@ struct Training
 
     void learner()
     {
-#ifdef ENABLE_TORCH
+        // #ifdef ENABLE_TORCH
         torch::optim::SGD optimizer{net.parameters(), .001};
         torch::nn::MSELoss mse{};
         torch::nn::CrossEntropyLoss cel{};
@@ -338,47 +341,65 @@ struct Training
 
         while (train)
         {
-            learner_fetch();
-            torch::cuda::synchronize();
+            // learner_fetch();
 
-            torch::Tensor float_input =
-                torch::from_blob(
-                    learner_buffers.float_input_buffer,
-                    {learner_buffer_size, n_bytes_battle})
-                    .to(net.device);
-            torch::Tensor value_data =
-                torch::from_blob(
-                    learner_buffers.value_data_buffer,
-                    {learner_buffer_size, 2})
-                    .to(net.device);
-            torch::Tensor value_target = value_data.index({"...", torch::indexing::Slice{0, 1, 1}});
-            torch::Tensor joined_policy_indices =
-                torch::from_blob(
-                    learner_buffers.joined_policy_index_buffer,
-                    {learner_buffer_size, 18}, torch::kInt64)
-                    .to(net.device);
-            torch::Tensor joined_policy_target =
-                torch::from_blob(
-                    learner_buffers.joined_policy_buffer,
-                    {learner_buffer_size, 18})
-                    .to(net.device);
-            torch::cuda::synchronize();
-            // torch::Tensor old_god =
+            // torch::Tensor float_input =
+            //     torch::from_blob(
+            //         learner_buffers.float_input_buffer,
+            //         {learner_buffer_size, n_bytes_battle}).to(net.device).clone()
+            //         .to(net.device);
+            // torch::Tensor value_data =
+            //     torch::from_blob(
+            //         learner_buffers.value_data_buffer,
+            //         {learner_buffer_size, 2}).to(net.device).clone()
+            //         .to(net.device);
+            // torch::Tensor value_target = value_data.index({"...", torch::indexing::Slice{0, 1, 1}});
+            // torch::Tensor joined_policy_indices =
+            //     torch::from_blob(
+            //         learner_buffers.joined_policy_index_buffer,
+            //         {learner_buffer_size, 18}, torch::kInt64).to(net.device).clone()
+            //         .to(net.device);
+            // torch::Tensor joined_policy_target =
+            //     torch::from_blob(
+            //         learner_buffers.joined_policy_buffer,
+            //         {learner_buffer_size, 18}).to(net.device).clone()
+            //         .to(net.device);
+            // torch::cuda::synchronize();
+            // torch::Tensor sample__ =
             //     torch::from_blob(
             //         sample_buffers.joined_policy_index_buffer,
             //         {sample_buffer_size, 18}, torch::kInt64)
             //         .to(net.device);
 
             // std::cout << "sample joined policy buffer " << std::endl;
-            // pt(old_god);
+            // pt(sample__);
+
+            torch::Tensor float_input = torch::rand({learner_buffer_size, 376}).to(torch::kCUDA);
+            torch::Tensor value_target = torch::rand({learner_buffer_size, 1}).to(torch::kCUDA);
+
+            torch::Tensor joined_policy_indices = torch::ones({learner_buffer_size, 18}, torch::kInt64).to(torch::kCUDA);
+
+            torch::Tensor joined_policy_target = torch::rand({learner_buffer_size, 18}).to(torch::kCUDA);
+            torch::Tensor row_policy_target = joined_policy_target.index({"...", torch::indexing::Slice{0, 9, 1}});
+            torch::Tensor col_policy_target = joined_policy_target.index({"...", torch::indexing::Slice{9, 18, 1}});
+            row_policy_target /= row_policy_target.norm(1, {1}, true);
+            col_policy_target /= col_policy_target.norm(1, {1}, true);
 
             auto output = net.forward(float_input, joined_policy_indices);
             optimizer.zero_grad();
-            torch::Tensor loss =
+            torch::Tensor value_loss =
                 mse(output.value, value_target);
-            // + cel(output.row_policy, joined_policy_target.index({"...", torch::indexing::Slice{0, 9, 1}}))
-            // + cel(output.col_policy, joined_policy_target.index({"...", torch::indexing::Slice{8, 18, 1}}));
-            std::cout << "loss: " << loss.item().toFloat() << std::endl;
+            torch::Tensor row_policy_loss =
+                torch::nn::functional::kl_div(
+                    output.row_policy,
+                    row_policy_target,
+                    torch::nn::functional::KLDivFuncOptions(torch::kBatchMean));
+            torch::Tensor col_policy_loss =
+                torch::nn::functional::kl_div(
+                    output.col_policy,
+                    col_policy_target,
+                    torch::nn::functional::KLDivFuncOptions(torch::kBatchMean));
+            torch::Tensor loss = value_loss + row_policy_loss + col_policy_loss;
             loss.backward();
             optimizer.step();
             float rate = learn_metric.update_and_get_rate(1);
@@ -390,7 +411,7 @@ struct Training
             }
             // std::cout << "learn rate: " << rate << std::endl;
         }
-#endif
+        // #endif
     }
 
     void start(const int n_actor_threads)
@@ -412,7 +433,7 @@ struct Training
 int main()
 {
     const int sample_buffer_size = 1 << 8;
-    const int learner_minibatch_size = 1 << 6;
+    const int learner_minibatch_size = 1 << 2;
 
     Training<Net> training_workspace{sample_buffer_size, learner_minibatch_size};
     training_workspace.train = false;

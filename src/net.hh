@@ -40,11 +40,12 @@ void pt(torch::Tensor tensor)
 {
     int a = tensor.size(0);
     int b = tensor.size(1);
+    std::cout << "size: " << a << ' ' << b << std::endl; 
     for (int i = 0; i < a; ++i)
     {
         for (int j = 0; j < b; ++j)
         {
-            std::cout << tensor[i][j].item<float>() << " ";
+            std::cout << tensor.index({i, j}).item().toFloat() << " ";
         }
         std::cout << std::endl;
     }
@@ -95,28 +96,22 @@ public:
         // pt(input.index({"...", torch::indexing::Slice{0, 24, 1}}));
         torch::Tensor tower_ = tower->forward(torch::relu(fc(input)));
         // torch::Tensor a = torch::randint(1, 100, {64, 19}).to(this->device);
-        torch::Tensor row_logits = fc_row_logits(torch::relu(fc_row_logits_pre(tower_.clone().to(device))));
-        torch::Tensor col_logits = fc_col_logits(torch::relu(fc_col_logits_pre(tower_.clone().to(device))));
+        torch::Tensor row_logits = fc_row_logits(torch::relu(fc_row_logits_pre(tower_)));
+        torch::Tensor col_logits = fc_col_logits(torch::relu(fc_col_logits_pre(tower_)));
         torch::Tensor row_policy_indices = joined_policy_indices.index({"...", torch::indexing::Slice{0, 9, 1}});
         torch::Tensor col_policy_indices = joined_policy_indices.index({"...", torch::indexing::Slice{9, 18, 1}});
         torch::Tensor row_logits_picked = torch::gather(row_logits, 1, row_policy_indices);
         torch::Tensor col_logits_picked = torch::gather(col_logits, 1, col_policy_indices);
-        torch::Tensor r = torch::softmax(row_logits_picked, 1);
-        torch::Tensor c = torch::softmax(col_logits_picked, 1);
-        // std::cout << "row & col policy index tensors:" << std::endl;
+        torch::Tensor r = torch::log_softmax(row_logits_picked, 1);
+        torch::Tensor c = torch::log_softmax(col_logits_picked, 1);
         // pt(joined_policy_indices);
         // pt(row_policy_indices);
         // pt(col_policy_indices);
         // pt(row_logits_picked);
         // pt(col_logits_picked);
-        pt(row_logits);
-        pt(col_logits);
+        // pt(r);
+        // pt(c);
         torch::Tensor value = torch::sigmoid(fc_value(torch::relu(fc_value_pre(tower_))));
-        // return {value, row_logits, col_logits};
-
-        return {
-            value,
-            torch::softmax(torch::gather(row_logits, 1, row_policy_indices), 1),
-            torch::softmax(torch::gather(col_logits, 1, col_policy_indices), 1)};
+        return {value, r, c};
     }
 };
