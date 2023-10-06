@@ -51,8 +51,9 @@ namespace CUDACommon
         const int max_index);
 
     void copy_sample_to_learner_buffer(
-        LearnerBuffers learner_buffer,
-        const LearnerBuffers sample_buffer,
+        LearnerBuffers learner_buffers,
+        const LearnerBuffers sample_buffers,
+        LearnerBuffers index_buffers,
         const int start_index,
         const int count,
         const int n_samples,

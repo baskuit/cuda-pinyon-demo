@@ -36,7 +36,8 @@ namespace Kernels
 
     __global__ void __sample_kernel(
         LearnerBuffers tgt,
-        LearnerBuffers src,
+        const LearnerBuffers src,
+        LearnerBuffers index_buffers,
         const int start,
         const int count,
         const int max_index,
@@ -49,7 +50,8 @@ namespace Kernels
             curand_init(clock64(), tid, 0, &state);
             const int sample_index =
                 (start +
-                (int)(ceil((curand_uniform(&state) * count)) - 1)) % max_index;
+                 (int)(ceil((curand_uniform(&state) * count)) - 1)) %
+                max_index;
             memcpy(
                 tgt.float_input_buffer + tid * n_bytes_battle,
                 src.float_input_buffer + sample_index * n_bytes_battle, n_bytes_battle * sizeof(float));
@@ -60,11 +62,31 @@ namespace Kernels
                 tgt.joined_policy_buffer + tid * 18,
                 src.joined_policy_buffer + sample_index * 18, 18 * sizeof(float));
             memcpy(
-                tgt.joined_policy_index_buffer + tid * 18,
+                &tgt.joined_policy_index_buffer[tid * 18],
                 src.joined_policy_index_buffer + sample_index * 18, 18 * sizeof(int64_t));
+            index_buffers.joined_policy_index_buffer[tid] = sample_index;
         }
     }
 };
+
+void CUDACommon::copy_sample_to_learner_buffer(
+    LearnerBuffers learner_buffers,
+    const LearnerBuffers sample_buffers,
+    LearnerBuffers index_buffers,
+    const int start_index,
+    const int count,
+    const int max_index,
+    const int n_samples)
+{
+    const int n_blocks = ceil(n_samples / (float)32);
+
+    Kernels::__sample_kernel<<<n_blocks, 32>>>(
+        learner_buffers,
+        sample_buffers,
+        index_buffers,
+        start_index, count, max_index, n_samples);
+    cudaDeviceSynchronize();
+}
 
 void CUDACommon::copy_game_to_sample_buffer(
     LearnerBuffers &sample_buffers,
@@ -80,58 +102,50 @@ void CUDACommon::copy_game_to_sample_buffer(
     const int initial = start_index + count;
     if (initial <= max_index)
     {
-        memcpy(sample_buffers.value_data_buffer + 2 * start_index, actor_buffers.value_data_buffer, 2 * count * sizeof(float));
-        memcpy(sample_buffers.joined_policy_buffer + 18 * start_index, actor_buffers.joined_policy_buffer, 18 * count * sizeof(float));
-        memcpy(sample_buffers.joined_policy_index_buffer + 18 * start_index, actor_buffers.joined_policy_index_buffer, 18 * count * sizeof(int64_t));
+        memcpy(
+            &sample_buffers.value_data_buffer[2 * start_index],
+            actor_buffers.value_data_buffer,
+            2 * count * sizeof(float));
+        memcpy(
+            &sample_buffers.joined_policy_buffer[18 * start_index],
+            actor_buffers.joined_policy_buffer,
+            18 * count * sizeof(float));
+        memcpy(
+            &sample_buffers.joined_policy_index_buffer[18 * start_index],
+            actor_buffers.joined_policy_index_buffer,
+            18 * count * sizeof(int64_t));
     }
     else
     {
         const int initial_ = initial % max_index;
-        const int count_ = max_index - count;
+        const int count_ = max_index - start_index;
         // initial_
         memcpy(
             sample_buffers.value_data_buffer,
-            actor_buffers.value_data_buffer + 2 * count_,
+            &actor_buffers.value_data_buffer[2 * count_],
             2 * initial_ * sizeof(float));
         memcpy(
             sample_buffers.joined_policy_buffer,
-            actor_buffers.joined_policy_buffer + 18 * count_,
+            &actor_buffers.joined_policy_buffer[18 * count_],
             18 * initial_ * sizeof(float));
         memcpy(
             sample_buffers.joined_policy_index_buffer,
-            actor_buffers.joined_policy_index_buffer + 18 * count_,
+            &actor_buffers.joined_policy_index_buffer[18 * count_],
             18 * initial_ * sizeof(int64_t));
         // start - end
         memcpy(
-            sample_buffers.value_data_buffer + 2 * start_index,
+            &sample_buffers.value_data_buffer[2 * start_index],
             actor_buffers.value_data_buffer,
             2 * count_ * sizeof(float));
         memcpy(
-            sample_buffers.joined_policy_buffer + 18 * start_index,
+            &sample_buffers.joined_policy_buffer[18 * start_index],
             actor_buffers.joined_policy_buffer,
             18 * count_ * sizeof(float));
         memcpy(
-            sample_buffers.joined_policy_index_buffer + 18 * start_index,
+            &sample_buffers.joined_policy_index_buffer[18 * start_index],
             actor_buffers.joined_policy_index_buffer,
             18 * count_ * sizeof(int64_t));
     }
-    cudaDeviceSynchronize();
-}
-
-void CUDACommon::copy_sample_to_learner_buffer(
-    LearnerBuffers learner_buffers,
-    LearnerBuffers sample_buffers,
-    const int start_index,
-    const int count,
-    const int max_index,
-    const int n_samples)
-{
-    const int n_blocks = ceil(n_samples / (float)32);
-
-    Kernels::__sample_kernel<<<n_blocks, 32>>>(
-        learner_buffers,
-        sample_buffers,
-        start_index, count, max_index, n_samples);
     cudaDeviceSynchronize();
 }
 

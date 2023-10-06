@@ -21,8 +21,7 @@ endif()
 
 # nvcc flags                                                                                                                                                                                               
 set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS};-gencode arch=compute_61,code=sm_61) # --allow-unsupported-compiler)
-
-cuda_add_library(common src/common.cu)
+cuda_add_library(common src/common.cu OPTIONS -DTORCH_USE_CUDA_DSA=1)
 
 add_subdirectory(extern/pinyon)
 target_include_directories(pinyon INTERFACE extern/pinyon/src)
@@ -33,6 +32,7 @@ add_executable(main main.cc)
 target_link_libraries(main pinyon)
 target_link_libraries(main ${PROJECT_SOURCE_DIR}/extern/engine/zig-out/lib/libpkmn-showdown.a)
 target_link_libraries(main common)
+# target_compile_definitions(main PUBLIC TORCH_USE_CUDA_DSA)
 if(ENABLE_TORCH_)
     target_link_libraries(main "${TORCH_LIBRARIES}")
     target_compile_definitions(main PUBLIC ENABLE_TORCH)
