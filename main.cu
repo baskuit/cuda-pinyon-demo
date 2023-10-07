@@ -11,6 +11,27 @@
 #include <math.h>
 #include <stdint.h>
 
+const int n_bytes_battle = 376;
+const int n_pokemon = 151;
+const int n_moveslots = 165;
+const int policy_size = n_pokemon + n_moveslots;
+
+struct ActorBuffers
+{
+    uint64_t *raw_input_buffer;
+    float *value_data_buffer;
+    float *joined_policy_buffer;
+    int64_t *joined_policy_index_buffer;
+};
+
+struct LearnerBuffers
+{
+    float *float_input_buffer;
+    float *value_data_buffer;
+    float *joined_policy_buffer;
+    int64_t *joined_policy_index_buffer;
+};
+
 namespace Kernels
 {
 
@@ -68,7 +89,7 @@ namespace Kernels
     }
 };
 
-void CUDACommon::copy_sample_to_learner_buffer(
+void copy_sample_to_learner_buffer(
     LearnerBuffers learner_buffers,
     const LearnerBuffers sample_buffers,
     LearnerBuffers index_buffers,
@@ -87,7 +108,7 @@ void CUDACommon::copy_sample_to_learner_buffer(
     cudaDeviceSynchronize();
 }
 
-void CUDACommon::copy_game_to_sample_buffer(
+void copy_game_to_sample_buffer(
     LearnerBuffers &sample_buffers,
     const ActorBuffers &actor_buffers,
     const int start_index,
@@ -148,7 +169,7 @@ void CUDACommon::copy_game_to_sample_buffer(
     cudaDeviceSynchronize();
 }
 
-void CUDACommon::alloc_actor_buffers(
+void alloc_actor_buffers(
     ActorBuffers &buffer_data,
     const long int batch_size)
 {
@@ -158,7 +179,7 @@ void CUDACommon::alloc_actor_buffers(
     cudaMallocHost(&buffer_data.joined_policy_index_buffer, batch_size * 18 * sizeof(int64_t));
 }
 
-void CUDACommon::alloc_pinned_buffers(
+void alloc_pinned_buffers(
     LearnerBuffers &buffer_data,
     const long int batch_size)
 {
@@ -168,7 +189,7 @@ void CUDACommon::alloc_pinned_buffers(
     cudaMallocHost(&buffer_data.joined_policy_index_buffer, batch_size * 18 * sizeof(int64_t));
 }
 
-void CUDACommon::alloc_device_buffers(
+void alloc_device_buffers(
     LearnerBuffers &buffer_data,
     const long int batch_size)
 {
@@ -178,7 +199,7 @@ void CUDACommon::alloc_device_buffers(
     cudaMalloc(&buffer_data.joined_policy_index_buffer, batch_size * 18 * sizeof(int64_t));
 }
 
-void CUDACommon::dealloc_buffers(
+void dealloc_buffers(
     LearnerBuffers &buffer_data)
 {
     cudaFree(buffer_data.float_input_buffer);
@@ -187,7 +208,7 @@ void CUDACommon::dealloc_buffers(
     cudaFree(buffer_data.joined_policy_index_buffer);
 }
 
-void CUDACommon::dealloc_actor_buffers(
+void dealloc_actor_buffers(
     ActorBuffers &buffer_data)
 {
     cudaFree(buffer_data.raw_input_buffer);
@@ -196,26 +217,58 @@ void CUDACommon::dealloc_actor_buffers(
     cudaFree(buffer_data.joined_policy_index_buffer);
 }
 
-
-const int n_bytes_battle = 376;
-const int n_pokemon = 151;
-const int n_moveslots = 165;
-const int policy_size = n_pokemon + n_moveslots;
-
-struct ActorBuffers
+struct PinnedBuffers : LearnerBuffers
 {
-    uint64_t *raw_input_buffer;
-    float *value_data_buffer;
-    float *joined_policy_buffer;
-    int64_t *joined_policy_index_buffer;
+    PinnedBuffers() {}
+
+    PinnedBuffers(const int size)
+    {
+        alloc_pinned_buffers(*this, size);
+    }
+
+    ~PinnedBuffers()
+    {
+        dealloc_buffers(*this);
+    }
+
+    PinnedBuffers(const PinnedBuffers &) = delete;
+    PinnedBuffers &operator=(const PinnedBuffers &) = delete;
 };
 
-struct LearnerBuffers
+struct DeviceBuffers : LearnerBuffers
 {
-    float *float_input_buffer;
-    float *value_data_buffer;
-    float *joined_policy_buffer;
-    int64_t *joined_policy_index_buffer;
+    DeviceBuffers() {}
+
+    DeviceBuffers(const int size)
+    {
+        alloc_device_buffers(*this, size);
+    }
+
+    ~DeviceBuffers()
+    {
+        dealloc_buffers(*this);
+    }
+
+    DeviceBuffers(const DeviceBuffers &) = delete;
+    DeviceBuffers &operator=(const DeviceBuffers &) = delete;
+};
+
+struct PinnedActorBuffers : ActorBuffers
+{
+    PinnedActorBuffers() {}
+
+    PinnedActorBuffers(const int size)
+    {
+        alloc_actor_buffers(*this, size);
+    }
+
+    ~PinnedActorBuffers()
+    {
+        dealloc_actor_buffers(*this);
+    }
+
+    PinnedActorBuffers(const PinnedActorBuffers &) = delete;
+    PinnedActorBuffers &operator=(const PinnedActorBuffers &) = delete;
 };
 
 // print tensor
@@ -280,6 +333,7 @@ public:
     torch::nn::Linear fc_row_logits{nullptr};
     torch::nn::Linear fc_col_logits_pre{nullptr};
     torch::nn::Linear fc_col_logits{nullptr};
+
     Net()
     {
         // input
@@ -374,7 +428,7 @@ struct Training
         const int sample_index_first = s % sample_buffer_size;
 
         sample_mutex.lock();
-        CUDACommon::copy_game_to_sample_buffer(
+        copy_game_to_sample_buffer(
             sample_buffers,
             actor_buffers,
             sample_index_first,
@@ -384,12 +438,12 @@ struct Training
     }
 
     void learner_fetch()
-    {        
+    {
         const int start = (sample_index.load() + berth) % sample_buffer_size;
         int range = sample_buffer_size - 2 * berth;
 
         sample_mutex.lock();
-        CUDACommon::copy_sample_to_learner_buffer(
+        copy_sample_to_learner_buffer(
             learner_buffers,
             sample_buffers,
             index_buffers,
@@ -415,7 +469,7 @@ struct Training
         row_strategy.resize(9);
         for (int action = 0; action < 9; ++action)
         {
-            row_strategy[i] = 1 / 9.0f;
+            row_strategy[action] = 1 / 9.0f;
         }
         int rows = 9;
         int cols = 9;
@@ -443,8 +497,7 @@ struct Training
 
                 for (int i = 0; i < 18; ++i)
                 {
-
-                    buffers.joined_policy_index_buffer[buffer_index * 18 + i] = get_index_from_action(state.battle.bytes, state.row_actions[i].get(), 0);
+                    buffers.joined_policy_index_buffer[buffer_index * 18 + i] = int64_t{i};
                 }
                 ++buffer_index;
             }
@@ -468,12 +521,12 @@ struct Training
             torch::Tensor float_input =
                 torch::from_blob(
                     learner_buffers.float_input_buffer,
-                    {learner_buffer_size, n_bytes_battle}).to(net.device).clone()
+                    {learner_buffer_size, n_bytes_battle})
                     .to(net.device);
             torch::Tensor value_data =
                 torch::from_blob(
                     learner_buffers.value_data_buffer,
-                    {learner_buffer_size, 2}).to(net.device).clone()
+                    {learner_buffer_size, 2})
                     .to(net.device);
             torch::Tensor value_target = value_data.index({"...", torch::indexing::Slice{0, 1, 1}});
             torch::Tensor joined_policy_indices =
@@ -484,7 +537,7 @@ struct Training
             torch::Tensor joined_policy_target =
                 torch::from_blob(
                     learner_buffers.joined_policy_buffer,
-                    {learner_buffer_size, 18}).to(net.device).clone()
+                    {learner_buffer_size, 18})
                     .to(net.device);
             torch::cuda::synchronize();
 
@@ -505,24 +558,24 @@ struct Training
 
             torch::Tensor value_loss =
                 mse(output.value, value_target);
-            torch::Tensor row_policy_loss =
-                torch::nn::functional::kl_div(
-                    output.row_policy,
-                    row_policy_target,
-                    torch::nn::functional::KLDivFuncOptions(torch::kBatchMean));
-            torch::Tensor col_policy_loss =
-                torch::nn::functional::kl_div(
-                    output.col_policy,
-                    col_policy_target,
-                    torch::nn::functional::KLDivFuncOptions(torch::kBatchMean));
-            torch::Tensor loss = value_loss + row_policy_loss + col_policy_loss;
+            // torch::Tensor row_policy_loss =
+            //     torch::nn::functional::kl_div(
+            //         output.row_policy,
+            //         row_policy_target,
+            //         torch::nn::functional::KLDivFuncOptions(torch::kBatchMean));
+            // torch::Tensor col_policy_loss =
+            //     torch::nn::functional::kl_div(
+            //         output.col_policy,
+            //         col_policy_target,
+            //         torch::nn::functional::KLDivFuncOptions(torch::kBatchMean));
+            torch::Tensor loss = value_loss;// + row_policy_loss + col_policy_loss;
             loss.backward();
             optimizer.step();
             optimizer.zero_grad();
-
-            float rate = learn_metric.update_and_get_rate(1);
-            
+            pt(output.value);
+            pt(value_target);
             sleep(2);
+            std::cout << "loss: " << loss.item().toFloat() << std::endl;
         }
     }
 
