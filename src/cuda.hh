@@ -96,8 +96,8 @@ struct PinnedActorBuffers : ActorBuffers
     PinnedActorBuffers &operator=(const PinnedActorBuffers &) = delete;
 };
 
-void copy_sample_to_learner_buffer(
-    LearnerBuffers learner_buffers,
+void copy_sample_to_learn_buffer(
+    LearnerBuffers learn_buffers,
     const LearnerBuffers sample_buffers,
     LearnerBuffers index_buffers,
     const int start_index,

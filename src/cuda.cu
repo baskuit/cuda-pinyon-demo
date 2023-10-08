@@ -109,8 +109,8 @@ namespace Kernels
     }
 };
 
-void copy_sample_to_learner_buffer(
-    LearnerBuffers learner_buffers,
+void copy_sample_to_learn_buffer(
+    LearnerBuffers learn_buffers,
     const LearnerBuffers sample_buffers,
     LearnerBuffers index_buffers,
     const int start_index,
@@ -120,7 +120,7 @@ void copy_sample_to_learner_buffer(
 {
     const int n_blocks = ceil(n_samples / (float)32);
     Kernels::__sample_kernel<<<n_blocks, 32>>>(
-        learner_buffers,
+        learn_buffers,
         sample_buffers,
         index_buffers,
         start_index, count, max_index, n_samples);
