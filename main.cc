@@ -278,6 +278,10 @@ struct Training
 
     const int sample_buffer_size;
     const int learner_buffer_size;
+    const float policy_loss_weight = 1.0f;
+    const float base_learning_rate = .001;
+    const float log_learning_rate_decay_per_step = std::log(10) / -1000;
+    const float max_learner_actor_ratio = 150;
 
     PinnedBuffers sample_buffers{
         sample_buffer_size};
@@ -298,6 +302,8 @@ struct Training
 
     Metric actor_metric{100};
     Metric learn_metric{100};
+    float actor_rate;
+    float learner_rate;
 
     template <typename... Args>
     Training(
@@ -309,13 +315,6 @@ struct Training
           learner_buffer_size{learner_buffer_size}
     {
         net->to(torch::kCUDA);
-        for (int i = 0; i < sample_buffer_size; ++i)
-        {
-            for (int j = 0; j < 18; ++j)
-            {
-                sample_buffers.joined_policy_index_buffer[i * 18 + j] = int64_t{i % 100};
-            }
-        }
     }
 
     Training(const Training &) = delete;
@@ -325,10 +324,10 @@ struct Training
         const uint64_t s = sample_index.fetch_add(count);
         const int sample_index_first = s % sample_buffer_size;
 
-        float rate = actor_metric.update_and_get_rate(count);
-        if (rate > 0)
+        actor_rate = actor_metric.update_and_get_rate(count);
+        if (actor_rate > 0)
         {
-            std::cout << "actor rate: " << rate << " count: " << count << std::endl;
+            std::cout << "actor rate: " << actor_rate << " count: " << count << std::endl;
         }
 
         // sample_mutex.lock();
@@ -494,9 +493,9 @@ struct Training
 
     void learner()
     {
-        torch::optim::SGD optimizer{net->parameters(), .001};
         torch::nn::MSELoss mse{};
         torch::nn::CrossEntropyLoss cel{};
+        float learning_rate = base_learning_rate;
 
         while (!train)
         {
@@ -504,8 +503,9 @@ struct Training
         }
 
         size_t checkpoint = 0;
-        while (train)
+        while (checkpoint < 1000)
         {
+            torch::optim::SGD optimizer{net->parameters(), learning_rate};
             for (size_t step = 0; step < (1 << 7); ++step)
             {
 
@@ -516,12 +516,16 @@ struct Training
                         learner_buffers.float_input_buffer,
                         {learner_buffer_size, n_bytes_battle})
                         .to(net->device);
+
                 torch::Tensor value_data =
                     torch::from_blob(
                         learner_buffers.value_data_buffer,
                         {learner_buffer_size, 2})
                         .to(net->device);
-                torch::Tensor value_target = value_data.index({"...", torch::indexing::Slice{0, 1, 1}});
+                torch::Tensor q = value_data.index({"...", torch::indexing::Slice{0, 1, 1}});
+                torch::Tensor z = value_data.index({"...", torch::indexing::Slice{1, 2, 1}});
+                torch::Tensor value_target = .5 * q + .5 * z;
+
                 torch::Tensor joined_policy_indices =
                     torch::from_blob(
                         learner_buffers.joined_policy_index_buffer,
@@ -553,23 +557,23 @@ struct Training
                         output.col_policy,
                         col_policy_target,
                         torch::nn::functional::KLDivFuncOptions(torch::kBatchMean));
-                torch::Tensor loss = value_loss + row_policy_loss + col_policy_loss;
+
+                torch::Tensor loss = value_loss + policy_loss_weight * (row_policy_loss + col_policy_loss);
                 loss.backward();
                 optimizer.step();
                 optimizer.zero_grad();
-                pt(row_policy_target.index({torch::indexing::Slice(0, 4, 1), "..."}));
-                pt(output.row_policy.index({torch::indexing::Slice(0, 4, 1), "..."}));
-                // std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                // std::cout << "loss: " << loss.item().toFloat() << std::endl;
-                float rate = learn_metric.update_and_get_rate(1);
+                // pt(row_policy_target.index({torch::indexing::Slice(0, 4, 1), "..."}));
+                // pt(output.row_policy.index({torch::indexing::Slice(0, 4, 1), "..."}));
 
-                while (rate > 20)
+                learner_rate = learn_metric.update_and_get_rate(learner_buffer_size);
+                while (learner_rate > max_learner_actor_ratio * actor_rate)
                 {
                     sleep(1);
-                    rate = learn_metric.update_and_get_rate(0);
+                    learner_rate = learn_metric.update_and_get_rate(0);
                 }
             }
 
+            if (checkpoint % 10 == 0)
             {
                 auto timestamp = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
                 std::ostringstream oss;
@@ -580,6 +584,7 @@ struct Training
             }
 
             ++checkpoint;
+            learning_rate *= std::exp(log_learning_rate_decay_per_step);
         }
     }
 
@@ -601,8 +606,8 @@ struct Training
 
 int main()
 {
-    const int sample_buffer_size = 1 << 12;
-    const int learner_minibatch_size = 1 << 4;
+    const int sample_buffer_size = 1 << 16;
+    const int learner_minibatch_size = 1 << 10;
 
     Training training_workspace{sample_buffer_size, learner_minibatch_size};
     training_workspace.train = false;
