@@ -4,9 +4,9 @@ set (CMAKE_CXX_STANDARD 20)
 
 # find_package(CUDA REQUIRED)
 
-set(CMAKE_PREFIX_PATH "/home/user/Desktop/libtorch/")
 set(CMAKE_CUDA_ARCHITECTURES 61)
 set(CMAKE_CUDA_COMPILER /usr/local/cuda-12.1/bin/nvcc)
+set(CMAKE_PREFIX_PATH "/home/user/Desktop/libtorch/")
 find_package(Torch REQUIRED)
 
 # Add TORCH_USE_CUDA_DSA to CMAKE_CXX_FLAGS

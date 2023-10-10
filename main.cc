@@ -2,12 +2,30 @@
 
 #include <pinyon.hh>
 #include <pkmn.h>
-
 #include "./src/cuda.hh"
 
 #include <queue>
 
 #include "./sides.hh"
+
+namespace Options
+{
+    const int batch_size = 1 << 10;
+    const float policy_loss_weight = 0.5;
+    const float base_learning_rate = .01;
+    const int samples_per_checkpoint = 1 << 20;
+    const float log_learning_rate_decay_per_checkpoint = std::log(10) / -10;
+    const float max_learn_actor_ratio = 150;
+    const size_t full_iterations = 1 << 10;
+    const size_t partial_iterations = 1 << 8;
+    const float full_search_prob = .25;
+    const int berth = 1 << 8;
+
+    const int metric_history_size = 100;
+};
+
+#include "./src/res-net.hh"
+#include "./src/battle.hh"
 
 void pt(torch::Tensor tensor)
 {
@@ -24,208 +42,8 @@ void pt(torch::Tensor tensor)
     }
 }
 
-namespace Options
-{
-    const int hidden_size = 1 << 7;
-    const int input_size = 376;
-    const int outer_size = 1 << 5;
-    const int n_res_blocks = 4;
-};
-
-class ResBlock : public torch::nn::Module
-{
-public:
-    torch::nn::Linear fc1{nullptr};
-    torch::nn::Linear fc2{nullptr};
-
-    ResBlock()
-    {
-        fc1 = register_module("fc1", torch::nn::Linear(Options::hidden_size, Options::hidden_size));
-        fc2 = register_module("fc2", torch::nn::Linear(Options::hidden_size, Options::hidden_size));
-    }
-
-    torch::Tensor forward(torch::Tensor input)
-    {
-        torch::Tensor residual = input.clone();
-        input = torch::relu(fc2(torch::relu(fc1(input)))) + residual;
-        return input;
-    }
-};
-
-struct NetOutput
-{
-    torch::Tensor value, row_policy, col_policy;
-};
-
-class NetImpl : public torch::nn::Module
-{
-public:
-    torch::Device device = torch::kCUDA;
-    torch::nn::Linear fc{nullptr};
-    torch::nn::Sequential tower{};
-    torch::nn::Linear fc_value_pre{nullptr};
-    torch::nn::Linear fc_value{nullptr};
-    torch::nn::Linear fc_row_logits_pre{nullptr};
-    torch::nn::Linear fc_row_logits{nullptr};
-    torch::nn::Linear fc_col_logits_pre{nullptr};
-    torch::nn::Linear fc_col_logits{nullptr};
-
-    NetImpl()
-    {
-        fc = register_module("fc_input", torch::nn::Linear(Options::input_size, Options::hidden_size));
-        for (int i = 0; i < Options::n_res_blocks; ++i)
-        {
-            auto block = std::make_shared<ResBlock>();
-            tower->push_back(register_module("b" + std::to_string(i), block));
-        }
-        fc_value_pre = register_module("fc_value_pre", torch::nn::Linear(Options::hidden_size, Options::outer_size));
-        fc_value = register_module("fc_value", torch::nn::Linear(Options::outer_size, 1));
-        fc_row_logits_pre = register_module("fc_row_logits_pre", torch::nn::Linear(Options::hidden_size, Options::outer_size));
-        fc_row_logits = register_module("fc_row_logits", torch::nn::Linear(Options::outer_size, policy_size - 1));
-        fc_col_logits_pre = register_module("fc_col_logits_pre", torch::nn::Linear(Options::hidden_size, Options::outer_size));
-        fc_col_logits = register_module("fc_col_logits", torch::nn::Linear(Options::outer_size, policy_size - 1));
-    }
-
-    void to(const torch::Device &device)
-    {
-        static_cast<torch::nn::Module *>(this)->to(device);
-        this->device = device;
-    }
-
-    NetOutput forward(torch::Tensor input, torch::Tensor joined_policy_indices)
-    {
-
-        torch::Tensor tower_ = tower->forward(torch::relu(fc(input)));
-        torch::Tensor row_logits = fc_row_logits(torch::relu(fc_row_logits_pre(tower_)));
-        torch::Tensor col_logits = fc_col_logits(torch::relu(fc_col_logits_pre(tower_)));
-        torch::Tensor row_policy_indices = joined_policy_indices.index({"...", torch::indexing::Slice{0, 9, 1}});
-        torch::Tensor col_policy_indices = joined_policy_indices.index({"...", torch::indexing::Slice{9, 18, 1}});
-        // torch::Tensor row_logits_picked = torch::gather(row_logits, 1, row_policy_indices);
-        // torch::Tensor col_logits_picked = torch::gather(col_logits, 1, col_policy_indices);
-        torch::Tensor neg_inf = -1 * (1 << 10) * torch::ones({input.size(0), 1}, torch::kInt64).to(torch::kCUDA);
-        torch::Tensor row_logits_picked = torch::gather(torch::cat({neg_inf, row_logits}, 1), 1, row_policy_indices);
-        torch::Tensor col_logits_picked = torch::gather(torch::cat({neg_inf, col_logits}, 1), 1, col_policy_indices);
-        torch::Tensor r = torch::log_softmax(row_logits_picked, 1);
-        torch::Tensor c = torch::log_softmax(col_logits_picked, 1);
-        torch::Tensor value = torch::sigmoid(fc_value(torch::relu(fc_value_pre(tower_))));
-        return {value, r, c};
-    }
-};
-TORCH_MODULE(Net);
-
-using TypeList = DefaultTypes<
-    float,
-    pkmn_choice,
-    std::array<uint8_t, log_size>,
-    bool,
-    ConstantSum<1, 1>::Value,
-    A<9>::Array>;
-
-struct BattleTypes : TypeList
-{
-
-    class State : public PerfectInfoState<TypeList>
-    {
-    public:
-        pkmn_gen1_battle battle;
-        pkmn_gen1_log_options log_options;
-        pkmn_gen1_battle_options options{};
-        pkmn_result result;
-
-        State(const uint64_t seed = 0)
-        {
-            TypeList::PRNG device{seed};
-            const auto row_side = sides[device.random_int(n_sides)];
-            const auto col_side = sides[device.random_int(n_sides)];
-            memcpy(battle.bytes, row_side, 184);
-            memcpy(battle.bytes + 184, col_side, 184);
-            for (int i = 2 * 184; i < n_bytes_battle; ++i)
-            {
-                battle.bytes[i] = 0;
-            }
-            log_options = {this->obs.get().data(), log_size};
-            pkmn_gen1_battle_options_set(&options, &log_options, NULL, NULL);
-            get_actions();
-        }
-
-        State(const State &other)
-        {
-            this->row_actions = other.row_actions;
-            this->col_actions = other.col_actions;
-            this->terminal = other.terminal;
-            // memcpy(battle.bytes, other.battle.bytes, 384 - 8); // don't need seed
-            memcpy(battle.bytes, other.battle.bytes, 384);
-            log_options = {this->obs.get().data(), log_size};
-            pkmn_gen1_battle_options_set(&options, &log_options, NULL, NULL);
-        }
-
-        State &operator=(const State &other)
-        {
-            this->row_actions = other.row_actions;
-            this->col_actions = other.col_actions;
-            this->terminal = other.terminal;
-            memcpy(battle.bytes, other.battle.bytes, 384);
-            log_options = {this->obs.get().data(), log_size};
-            pkmn_gen1_battle_options_set(&options, &log_options, NULL, NULL);
-            return *this;
-        }
-
-        void get_actions()
-        {
-            this->row_actions.resize(
-                pkmn_gen1_battle_choices(
-                    &battle,
-                    PKMN_PLAYER_P1,
-                    pkmn_result_p1(result),
-                    reinterpret_cast<pkmn_choice *>(this->row_actions.data()),
-                    PKMN_MAX_CHOICES));
-            this->col_actions.resize(
-                pkmn_gen1_battle_choices(
-                    &battle,
-                    PKMN_PLAYER_P2,
-                    pkmn_result_p2(result),
-                    reinterpret_cast<pkmn_choice *>(this->col_actions.data()),
-                    PKMN_MAX_CHOICES));
-        }
-
-        void apply_actions(
-            TypeList::Action row_action,
-            TypeList::Action col_action)
-        {
-            result = pkmn_gen1_battle_update(&battle, row_action.get(), col_action.get(), &options);
-            const pkmn_result_kind result_kind = pkmn_result_type(result);
-            if (result_kind) [[unlikely]]
-            {
-                this->terminal = true;
-                if (result_kind == PKMN_RESULT_WIN)
-                {
-                    this->payoff = TypeList::Value{1.0f};
-                }
-                else if (result_kind == PKMN_RESULT_LOSE)
-                {
-                    this->payoff = TypeList::Value{0.0f};
-                }
-                else
-                {
-                    this->payoff = TypeList::Value{0.5f};
-                }
-            }
-            else [[likely]]
-            {
-                pkmn_gen1_battle_options_set(&options, NULL, NULL, NULL);
-            }
-        }
-
-        void randomize_transition(TypeList::PRNG &device)
-        {
-            uint8_t *battle_prng_bytes = battle.bytes + n_bytes_battle;
-            *(reinterpret_cast<uint64_t *>(battle_prng_bytes)) = device.get_seed();
-        }
-    };
-};
-
 // Pinyon type list for the entire program: Single threaded search on battles using Monte-Carlo eval.
-using Types = TreeBandit<Exp3<MonteCarloModel<BattleTypes>>, FlatNodes>;
+using Types = TreeBandit<Exp3<MonteCarloModel<BattleTypes>>, DefaultNodes>;
 // using Types = FlatSearch<Exp3<MonteCarloModel<BattleTypes>>>;
 
 struct Metric
@@ -268,6 +86,177 @@ struct Metric
         mtx.unlock();
         return answer;
     }
+};
+
+struct TraineeData
+{
+    torch::Device device;
+    const int batch_size;
+    const float policy_loss_weight;
+    const float base_learning_rate;
+    const float log_learning_rate_decay_per_checkpoint;
+
+    TraineeData(
+        const torch::Device device = torch::kCUDA,
+        const int batch_size = Options::batch_size,
+        const float policy_loss_weight = Options::policy_loss_weight,
+        const float base_learning_rate = Options::base_learning_rate,
+        const float log_learning_rate_decay_per_checkpoint = Options::log_learning_rate_decay_per_checkpoint)
+        : device{device},
+          batch_size{batch_size},
+          policy_loss_weight{policy_loss_weight},
+          base_learning_rate{base_learning_rate},
+          log_learning_rate_decay_per_checkpoint{log_learning_rate_decay_per_checkpoint}
+    {
+    }
+
+    Metric metric{100};
+    uint64_t n_samples = 0;
+    float learning_rate = base_learning_rate;
+
+    virtual std::string get_string(const int) const = 0;
+    torch::Device get_device() const { return device; }
+    int get_batch_size() const { return batch_size; }
+    // std::string get_string(const int) const { return ""; }
+};
+
+template <typename Net, typename Optimizer>
+struct TraineeImpl : TraineeData
+{
+    // torch::nn::Module net{nullptr};
+    Net net;
+    Optimizer optimizer;
+
+    std::string get_string(const int checkpoint) const
+    {
+        return "";
+    }
+
+    template <typename... Args>
+    TraineeImpl(
+        const Net &net,
+        const Args &...args)
+        : TraineeData{args...},
+          net{net},
+          optimizer{net->parameters(), this->learning_rate}
+    {
+        // optimizer = std::move(Optimizer{net->parameters(), base_learning_rate});
+    }
+};
+
+using Trainee = std::shared_ptr<TraineeData>;
+
+struct TrainingAndEval
+{
+    // ownership over metric (queue, mutex). `net` should be shared_ptr anyway
+    std::vector<Trainee> trainees;
+    // to keep track of training lifetime for 'divide-and-conquer` eval
+    std::vector<std::vector<std::string>> trainee_version_strings;
+    // iterate over these to train on multiple GPUs at once
+    std::vector<torch::Device> training_devices;
+    std::vector<std::vector<Trainee>> trainee_device_groupings;
+
+    PinnedBuffers sample_buffers{
+        sample_buffer_size};
+    std::atomic<uint64_t> sample_index{0};
+    // has the size of the largest learner `batch_size`
+    std::vector<
+        DeviceBuffers>
+        learn_buffers_by_device;
+
+    const int sample_buffer_size;
+    const int learn_buffer_size;
+    const float max_learn_actor_ratio = Options::max_learn_actor_ratio;
+
+    const size_t full_iterations = Options::full_iterations;
+    const size_t partial_iterations = Options::partial_iterations;
+    const float full_search_prob = Options::full_search_prob;
+    const int berth = Options::berth;
+
+    Metric actor_metric{Options::metric_history_size};
+    Metric learn_metric{Options::metric_history_size};
+    float actor_sample_rate;
+    float learn_sample_rate; // average
+
+    bool run_learn = false;
+    bool run_actor = true;
+
+    template <typename... TraineeTs>
+    TrainingAndEval(
+        const TraineeTs &&...trainee_args,
+        const int sample_buffer_size)
+        : // : trainees{std::forward(trainee_args...)},
+          sample_buffer_size{sample_buffer_size}
+    {
+        trainees = {std::make_shared<TraineeTs>(std::forward(trainee_args...))...};
+        const size_t n_trainees = trainees.size();
+        std::vector<size_t> max_batch_size_by_device = {};
+
+        for (auto trainee : trainees)
+        {
+            bool assumed_new_device = true;
+            size_t device_index = 0;
+            for (const auto &device : training_devices)
+            {
+                if (device == trainee->get_device())
+                {
+                    assumed_new_device = false;
+                    break;
+                }
+                ++device_index;
+            }
+            if (assumed_new_device)
+            {
+                training_devices.push_back(trainee->get_device());
+                trainee_device_groupings.emplace_back(trainee);
+                max_batch_size_by_device.push_back(trainee->get_batch_size());
+            }
+            else
+            {
+                trainee_device_groupings[device_index].push_back(trainee);
+                if (trainee->get_batch_size() > max_batch_size_by_device[device_index])
+                {
+                    max_batch_size_by_device[device_index] = trainee->get_batch_size();
+                }
+            }
+        }
+
+        for (size_t device_index = 0; device_index < training_devices.size(); ++device_index)
+        {
+            learn_buffers_by_device.emplace_back(max_batch_size_by_device[device_index]); // TODO add device arg
+        }
+    }
+
+    void actor() {}
+    void learn()
+    {
+
+        while (!run_learn)
+        {
+            sleep(1);
+        }
+
+        while (run_learn)
+        {
+        }
+    }
+    void run() {}
+    void train(
+        const size_t n_actor_threads)
+    {
+        std::thread actor_threads[n_actor_threads];
+        for (int i = 0; i < n_actor_threads; ++i)
+        {
+            actor_threads[i] = std::thread(&TrainingAndEval::actor, this);
+        }
+        std::thread learn_thread{&TrainingAndEval::learn, this};
+        for (int i = 0; i < n_actor_threads; ++i)
+        {
+            actor_threads[i].join();
+        }
+        learn_thread.join();
+    }
+    void eval() {}
 };
 
 struct Training
@@ -369,7 +358,7 @@ struct Training
         PinnedActorBuffers buffers{500};
         int buffer_index = 0;
         Types::PRNG device{};
-        Types::State state{device.get_seed()};
+        Types::State state{device.random_int(n_sides), device.random_int(n_sides)};
         Types::Model model{0};
         Types::Search search{};
         int rows, cols;
@@ -383,7 +372,7 @@ struct Training
                 {
                     buffers.value_data_buffer[2 * i + 1] = state.payoff.get_row_value().get();
                 }
-                // actor_store(buffers, buffer_index);
+                actor_store(buffers, buffer_index);
                 buffer_index = 0;
                 state = Types::State{device.get_seed()};
                 state.randomize_transition(device);
@@ -409,8 +398,6 @@ struct Training
             const Types::MatrixStats &stats = root.stats;
             search.get_empirical_strategies(stats, row_strategy, col_strategy);
             search.get_empirical_value(stats, value);
-            // const int row_idx = device.random_int(rows);
-            // const int col_idx = device.random_int(cols);
             const int row_idx = device.sample_pdf(row_strategy);
             const int col_idx = device.sample_pdf(col_strategy);
             if (use_full_search)
@@ -436,26 +423,6 @@ struct Training
                 {
                     buffers.joined_policy_buffer[buffer_index * 18 + 9 + i] = 0.0f;
                 }
-                auto get_index_from_action = [](const uint8_t *bytes, const uint8_t choice, const uint8_t col_offset = 0)
-                {
-                    uint8_t type = choice & 3;
-                    uint8_t data = choice >> 2;
-                    if (type == 1)
-                    {
-                        uint8_t moveid = bytes[2 * (data - 1) + 10 + col_offset]; // 0 - 165
-                        return int64_t{moveid};                                   // index=0 is dummy very negative logit
-                    }
-                    else if (type == 2)
-                    {
-                        uint8_t slot = bytes[176 + data - 1 + col_offset];
-                        int dex = bytes[24 * (slot - 1) + 21 + col_offset]; // 0 - 151
-                        return int64_t{dex + 165};
-                    }
-                    else
-                    {
-                        return int64_t{0};
-                    }
-                };
                 for (int i = 0; i < 9; ++i)
                 {
                     if (i < rows)
@@ -551,21 +518,28 @@ struct Training
                     mse(output.value, value_target);
                 torch::Tensor row_policy_loss =
                     torch::nn::functional::kl_div(
-                        output.row_policy,
+                        output.row_log_policy,
                         row_policy_target,
                         torch::nn::functional::KLDivFuncOptions(torch::kBatchMean));
                 torch::Tensor col_policy_loss =
                     torch::nn::functional::kl_div(
-                        output.col_policy,
+                        output.col_log_policy,
                         col_policy_target,
                         torch::nn::functional::KLDivFuncOptions(torch::kBatchMean));
+
+                if (step == 0)
+                {
+                    std::cout << "value target (first 4 entries)" << std::endl;
+                    pt(value_target.index({torch::indexing::Slice(0, 4, 1)}));
+                    std::cout << "value output (first 4 entries)" << std::endl;
+                    pt(output.value.index({torch::indexing::Slice(0, 4, 1)}));
+                    std::cout << "value loss (batch): " << value_loss.item().toFloat() << std::endl;
+                }
 
                 torch::Tensor loss = value_loss + policy_loss_weight * (row_policy_loss + col_policy_loss);
                 loss.backward();
                 optimizer.step();
                 optimizer.zero_grad();
-                // pt(row_policy_target.index({torch::indexing::Slice(0, 4, 1), "..."}));
-                // pt(output.row_policy.index({torch::indexing::Slice(0, 4, 1), "..."}));
 
                 learn_rate = learn_metric.update_and_get_rate(learn_buffer_size);
                 while (learn_rate > max_learn_actor_ratio * actor_rate)
@@ -590,54 +564,92 @@ struct Training
         }
     }
 
-    void start(const int n_actor_threads)
-    {
-        std::thread actor_threads[n_actor_threads];
-        for (int i = 0; i < n_actor_threads; ++i)
-        {
-            actor_threads[i] = std::thread(&Training::actor, this);
-        }
-        // std::thread learn_thread{&Training::learn, this};
-        for (int i = 0; i < n_actor_threads; ++i)
-        {
-            actor_threads[i].join();
-        }
-        // learn_thread.join();
-    }
+
 };
 
-// struct NNTypes : BattleTypes {
+void count_transitions(
+    const Types::State &state,
+    const int tries = 1000,
+    const int row_idx = 0)
+{
+    Types::PRNG device{};
+    Types::ObsHash hasher{};
+    std::unordered_map<uint64_t, int> count{};
 
-//     struct ModelOutput {};
+    std::cout << "row idx" << row_idx << std::endl;
+    for (int i = 0; i < tries; ++i)
+    {
+        Types::State state_ = state;
+        state_.randomize_transition(device);
+        state_.apply_actions(
+            state_.row_actions[row_idx],
+            state_.col_actions[row_idx]);
+        // 14,14);
 
-//     class Model : public Net {
+        // for (int j = 0; j < 64; ++j)
+        // {
+        //     std::cout << static_cast<int>(state_.obs.get()[j]) << " ";
+        // }
+        // std::cout << std::endl;
 
-//         void inference(
-//             BattleTypes::State &&state,
-//             ModelOutput &output
-//         ) {
-//             torch::Tensor input = torch::empty({1, 376});
-//             torch::Tensor joined_policy_indices = torch::empty({1, 18});
-//             auto nn_output = this->forward(input, joined_policy_indices);
-//             torch::Tensor row_policy_tensor = torch::softmax(nn_output.row_policy, 1);
-//             torch::Tensor col_policy_tensor = torch::softmax(nn_output.col_policy, 1);
+        uint64_t hash = hasher(state_.obs);
+        count[hash] += 1;
+    }
 
-//         }
+    for (const auto &x : count)
+    {
+        std::cout << x.first << " : " << x.second << std::endl;
+    }
+}
 
-//     };
+void branch()
+{
+    Types::State state{0, 0};
+    state.apply_actions(0, 0);
+    state.get_actions();
 
-// };
+    for (int i = 0; i < 9; ++i)
+    {
+        count_transitions(state, 1000, i);
+        std::cout << std::endl;
+    }
+}
 
 int main()
 {
-    const int sample_buffer_size = 1 << 16;
-    const int learn_minibatch_size = 1 << 10;
+    TraineeImpl<Net, torch::optim::SGD>(Net{}, torch::kCUDA);
+    // TrainingAndEval workstation{
+    //     Net{},
+    //     1 << 16};
 
-    Training training_workspace{sample_buffer_size, learn_minibatch_size};
-    training_workspace.train = false;
-    // training_workspace.generate_samples = false;
-    // torch::load(training_workspace.net, "../saved/model_20231008144026.pt");
-    training_workspace.start(1);
+    // const int sample_buffer_size = 1 << 12;
+    // const int learn_minibatch_size = 1 << 10;
+
+    // Training training_workspace{sample_buffer_size, learn_minibatch_size};
+    // training_workspace.train = false;
+    // training_workspace.start(4);
+
+    // using NewTypes = TreeBandit<Exp3<NNTypes>>;
+
+    // NewTypes::Model model{};
+    // NewTypes::State battle{0};
+    // battle.apply_actions(0, 0);
+    // battle.get_actions();
+
+    // NewTypes::Search search{};
+    // NewTypes::PRNG device{};
+    // NewTypes::MatrixNode root{};
+    // size_t ms = search.run_for_iterations(1000, device, battle, model, root);
+    // std::cout << ms << " ms for 1000 iter" << std::endl;
+
+    // NewTypes::VectorReal row_strategy, col_strategy;
+    // NewTypes::Value value;
+    // search.get_empirical_strategies(root.stats, row_strategy, col_strategy);
+    // search.get_empirical_value(root.stats, value);
+
+    // math::print(row_strategy);
+    // math::print(col_strategy);
+    // std::cout << value << std::endl;
 
     return 0;
 }
