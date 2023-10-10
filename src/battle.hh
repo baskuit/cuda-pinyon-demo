@@ -1,5 +1,42 @@
 #pragma once
 
+#include <pinyon.hh>
+#include <pkmn.h>
+
+// global lambda for state processing
+
+auto get_index_from_action = [](const uint8_t *bytes, const uint8_t choice, const uint8_t col_offset = 0)
+{
+    uint8_t type = choice & 3;
+    uint8_t data = choice >> 2;
+    if (type == 1)
+    {
+        uint8_t moveid = bytes[2 * (data - 1) + 10 + col_offset]; // 0 - 165
+        return int64_t{moveid};                                   // index=0 is dummy very negative logit
+    }
+    else if (type == 2)
+    {
+        uint8_t slot = bytes[176 + data - 1 + col_offset];
+        int dex = bytes[24 * (slot - 1) + 21 + col_offset]; // 0 - 151
+        return int64_t{dex + 165};
+    }
+    else
+    {
+        return int64_t{0};
+    }
+};
+
+/*
+
+Pinyon compliant wrapper around the libpkmn battle objects.
+
+The 3 functions get_actions, apply_actions, and randomize_transition are all that's needed for MCTS.
+
+The chance/calc options allow us to force outcomes and thus reduce the branching factor of the search,
+at the cost of fidelity.
+
+*/
+
 using TypeList = DefaultTypes<
     float,
     pkmn_choice,
@@ -80,10 +117,10 @@ struct BattleTypes : TypeList
             TypeList::Action row_action,
             TypeList::Action col_action)
         {
-            const uint8_t roll{255};
-            memset(calc_options.overrides.bytes, roll, 8);
-            memset(calc_options.overrides.bytes + 8, roll, 8);
-            pkmn_gen1_battle_options_set(&options, &log_options, &chance_options, &calc_options);
+            // const uint8_t roll{255};
+            // memset(calc_options.overrides.bytes, roll, 8);
+            // memset(calc_options.overrides.bytes + 8, roll, 8);
+            // pkmn_gen1_battle_options_set(&options, &log_options, &chance_options, &calc_options);
             result = pkmn_gen1_battle_update(&battle, row_action.get(), col_action.get(), &options);
             const pkmn_result_kind result_kind = pkmn_result_type(result);
             if (result_kind) [[unlikely]]
@@ -113,28 +150,57 @@ struct BattleTypes : TypeList
             uint8_t *battle_prng_bytes = battle.bytes + n_bytes_battle;
             *(reinterpret_cast<uint64_t *>(battle_prng_bytes)) = device.uniform_64();
         }
+
+        // not pinyon interface, but reasonable to store here to unclog main.cc
+        void copy_to_buffer(
+            ActorBuffers buffers,
+            const size_t buffer_index,
+            const int rows, const int cols
+            )
+        {
+            memcpy(
+                &buffers.raw_input_buffer[buffer_index * 47],
+                reinterpret_cast<const uint64_t *>(battle.bytes),
+                376);
+            for (int i = rows; i < 9; ++i)
+            {
+                buffers.joined_policy_buffer[buffer_index * 18 + i] = 0.0f;
+            }
+
+            for (int i = cols; i < 9; ++i)
+            {
+                buffers.joined_policy_buffer[buffer_index * 18 + 9 + i] = 0.0f;
+            }
+            for (int i = 0; i < 9; ++i)
+            {
+                if (i < rows)
+                {
+                    buffers.joined_policy_index_buffer[buffer_index * 18 + i] = get_index_from_action(battle.bytes, this->row_actions[i].get(), 0);
+                }
+                else
+                {
+                    buffers.joined_policy_index_buffer[buffer_index * 18 + i] = 0;
+                }
+            }
+            if (buffers.joined_policy_index_buffer[buffer_index * 18] == 0 && rows == 1)
+            {
+                buffers.joined_policy_index_buffer[buffer_index * 18] = 1;
+            }
+            for (int i = 0; i < 9; ++i)
+            {
+                if (i < cols)
+                {
+                    buffers.joined_policy_index_buffer[buffer_index * 18 + 9 + i] = get_index_from_action(battle.bytes, this->col_actions[i].get(), 184);
+                }
+                else
+                {
+                    buffers.joined_policy_index_buffer[buffer_index * 18 + 9 + i] = 0;
+                }
+            }
+            if (buffers.joined_policy_index_buffer[buffer_index * 18 + 9] == 0 && cols == 1)
+            {
+                buffers.joined_policy_index_buffer[buffer_index * 18 + 9] = 1;
+            }
+        }
     };
-};
-
-// global lambda for state processing
-
-auto get_index_from_action = [](const uint8_t *bytes, const uint8_t choice, const uint8_t col_offset = 0)
-{
-    uint8_t type = choice & 3;
-    uint8_t data = choice >> 2;
-    if (type == 1)
-    {
-        uint8_t moveid = bytes[2 * (data - 1) + 10 + col_offset]; // 0 - 165
-        return int64_t{moveid};                                   // index=0 is dummy very negative logit
-    }
-    else if (type == 2)
-    {
-        uint8_t slot = bytes[176 + data - 1 + col_offset];
-        int dex = bytes[24 * (slot - 1) + 21 + col_offset]; // 0 - 151
-        return int64_t{dex + 165};
-    }
-    else
-    {
-        return int64_t{0};
-    }
 };

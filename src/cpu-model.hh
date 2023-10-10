@@ -1,7 +1,9 @@
 #pragma once
 
+#include "./battle.hh"
+
 template <typename Net>
-struct NNTypes : BattleTypes
+struct CPUModel : BattleTypes
 {
 
     struct ModelOutput
@@ -22,6 +24,7 @@ struct NNTypes : BattleTypes
         {
             torch::load(net, "../saved/model_20231009095620.pt");
             net->to(torch::kCPU);
+            net->eval();
         }
 
         void inference(
@@ -49,13 +52,13 @@ struct NNTypes : BattleTypes
             output.col_policy.resize(cols);
             for (int row_idx = 0; row_idx < rows; ++row_idx)
             {
-                output.row_policy[row_idx] = Types::Real{row_policy_tensor.index({0, row_idx}).item().toFloat()};
+                output.row_policy[row_idx] = BattleTypes::Real{row_policy_tensor.index({0, row_idx}).item().toFloat()};
             }
             for (int col_idx = 0; col_idx < cols; ++col_idx)
             {
-                output.col_policy[col_idx] = Types::Real{col_policy_tensor.index({0, col_idx}).item().toFloat()};
+                output.col_policy[col_idx] = BattleTypes::Real{col_policy_tensor.index({0, col_idx}).item().toFloat()};
             }
-            output.value.row_value = Types::Real{nn_output.value.item().toFloat()};
+            output.value.row_value = BattleTypes::Real{nn_output.value.item().toFloat()};
         }
     };
 };
