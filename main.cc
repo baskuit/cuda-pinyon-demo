@@ -12,7 +12,7 @@ namespace Options
     const float policy_loss_weight = 0.5;
     const float base_learning_rate = .01;
     const int samples_per_checkpoint = 1 << 20;
-    const float log_learning_rate_decay_per_checkpoint = std::log(10) / -10;
+    const float log_learning_rate_decay = std::log(10) / -10;
     const float max_learn_actor_ratio = 150;
     const size_t full_iterations = 1 << 10;
     const size_t partial_iterations = 1 << 8;
@@ -35,15 +35,12 @@ using Types = TreeBandit<Exp3<MonteCarloModel<BattleTypes>>, DefaultNodes>;
 struct Metric
 {
     std::mutex mtx{};
-
     const int max_donations;
-    Metric(const int max_donations) : max_donations{max_donations}
-    {
-    }
-
     std::queue<int> donation_sizes;
     std::queue<decltype(std::chrono::high_resolution_clock::now())> donation_times;
     int total_donations = 0;
+
+    Metric(const int max_donations) : max_donations{max_donations} {}
 
     float update_and_get_rate(const int donation_size)
     {
@@ -75,32 +72,41 @@ struct Metric
 };
 
 /*
-
 shared_ptr type erasure is used because we need different underlying NN and optimizer types
-
-
-
 */
 
 struct LearnerData
 {
-    torch::Device device;
+    const torch::Device device;
     const int batch_size;
     const float policy_loss_weight;
     const float base_learning_rate;
-    const float log_learning_rate_decay_per_checkpoint;
+    const float log_learning_rate_decay;
+
+    LearnerData(
+        const torch::Device device = torch::kCPU,
+        const int batch_size = Options::batch_size,
+        const float policy_loss_weight = Options::policy_loss_weight,
+        const float base_learning_rate = Options::base_learning_rate,
+        const float log_learning_rate_decay = Options::log_learning_rate_decay)
+        : device{device},
+          batch_size{batch_size},
+          policy_loss_weight{policy_loss_weight},
+          base_learning_rate{base_learning_rate},
+          log_learning_rate_decay{log_learning_rate_decay}
+    {
+    }
 
     Metric metric{100};
     uint64_t n_samples = 0;
     float learning_rate = base_learning_rate;
-
     // std::string get_string(const int) const { return ""; }
+    virtual W::Types::Model make_w_model() const = 0;
 };
 
 template <typename Net, typename Optimizer>
 struct LearnerImpl : LearnerData
 {
-    // torch::nn::Module net{nullptr};
     Net net;
     Optimizer optimizer;
 
@@ -117,7 +123,12 @@ struct LearnerImpl : LearnerData
           net{net},
           optimizer{net->parameters(), this->learning_rate}
     {
-        // optimizer = std::move(Optimizer{net->parameters(), base_learning_rate});
+    }
+
+    W::Types::Model make_w_model() const
+    {
+        return W::make_model<TreeBanditSearchModel<TreeBandit<Exp3<CPUModel<Net>>>>>(
+            typename TreeBanditSearchModel<TreeBandit<Exp3<CPUModel<Net>>>>::Model{Options::full_iterations, {}, {""}, {}});
     }
 };
 
@@ -130,19 +141,17 @@ struct TrainingAndEval
     // to keep track of training lifetime for 'divide-and-conquer` eval
     std::vector<std::vector<std::string>> learner_version_strings;
     // iterate over these to train on multiple GPUs at once
-    std::vector<torch::Device> training_devices;
+    std::vector<torch::Device> devices;
     std::vector<std::vector<Learner>> learner_device_groupings;
 
     PinnedBuffers sample_buffers{
         sample_buffer_size};
     std::atomic<uint64_t> sample_index{0};
     // has the size of the largest learner `batch_size`
-    std::vector<
-        DeviceBuffers>
-        learn_buffers_by_device;
+    DeviceBuffers
+        learn_buffers_by_device[2];
 
     const int sample_buffer_size;
-    const int learn_buffer_size;
     const float max_learn_actor_ratio = Options::max_learn_actor_ratio;
 
     const size_t full_iterations = Options::full_iterations;
@@ -158,14 +167,12 @@ struct TrainingAndEval
     bool run_learn = false;
     bool run_actor = true;
 
-    template <typename... LearnerTs>
     TrainingAndEval(
-        const LearnerTs &&...learner_args,
+        std::vector<Learner> &learners,
         const int sample_buffer_size)
-        : // : learners{std::forward(learner_args...)},
+        : learners{learners},
           sample_buffer_size{sample_buffer_size}
     {
-        learners = {std::make_shared<LearnerTs>(std::forward(learner_args...))...};
         const size_t n_learners = learners.size();
         std::vector<size_t> max_batch_size_by_device = {};
 
@@ -174,7 +181,7 @@ struct TrainingAndEval
         {
             bool assumed_new_device = true;
             size_t device_index = 0;
-            for (const auto &device : training_devices)
+            for (const auto &device : devices)
             {
                 if (device == learner->device)
                 {
@@ -185,8 +192,8 @@ struct TrainingAndEval
             }
             if (assumed_new_device)
             {
-                training_devices.push_back(learner->device);
-                learner_device_groupings.emplace_back(learner);
+                devices.push_back(learner->device);
+                learner_device_groupings.push_back({learner});
                 max_batch_size_by_device.push_back(learner->batch_size);
             }
             else
@@ -200,9 +207,9 @@ struct TrainingAndEval
         }
 
         // Initialize buffer for each device
-        for (size_t device_index = 0; device_index < training_devices.size(); ++device_index)
+        for (size_t device_index = 0; device_index < devices.size(); ++device_index)
         {
-            learn_buffers_by_device.emplace_back(max_batch_size_by_device[device_index]); // TODO add device arg
+            // learn_buffers_by_device[device_index] = DeviceBuffers{max_batch_size_by_device[device_index]}; // TODO add device arg
         }
     }
 
@@ -318,8 +325,10 @@ struct TrainingAndEval
             state.get_actions();
         }
     }
+
     void learn()
     {
+        const int n_devices = learner_device_groupings.size();
 
         while (!run_learn)
         {
@@ -328,9 +337,28 @@ struct TrainingAndEval
 
         while (run_learn)
         {
+            for (int device_index = 0; device_index < n_devices; ++device_index)
+            {
+
+                const torch::Device device = devices[device_index];
+
+                for (const Learner learner : learner_device_groupings[device_index])
+                {
+
+                    // learner is a net on device, needs to be sampled and trained
+                }
+            }
         }
     }
-    void run() {}
+
+    void run(
+        const size_t n_actor_threads,
+        const size_t n_samples)
+    {
+        train(n_actor_threads);
+        eval();
+    }
+
     void train(
         const size_t n_actor_threads)
     {
@@ -346,12 +374,49 @@ struct TrainingAndEval
         }
         learn_thread.join();
     }
-    void eval() {
-        // create W::Models and an arena for each learner
-        // then with the best version of each learner, do another arena
+
+    void eval()
+    {
+        // create W::Model for the NN behind each learner
+        // W::Model based on CPUModel::Model
+
+        std::vector<W::Types::Model> agents{};
+        for (const Learner learner : learners)
+        {
+            agents.emplace_back(learner->make_w_model());
+        }
+        using T = TreeBanditThreaded<Exp3<MonteCarloModel<Arena>>>;
+        T::PRNG arena_device{};
+        T::State arena_state{&battle_generator, agents};
+        T::Model arena_model{0};
+        T::Search arena_search{};
+        T::MatrixNode root{};
+        arena_search.run_for_iterations(1 << 10, arena_device, arena_state, arena_model, root);
+    }
+
+    // uint64_t -> W::Types::State function used for the arena state in eval phase
+    static W::Types::State battle_generator(SimpleTypes::Seed seed)
+    {
+        SimpleTypes::PRNG device{seed};
+        return W::make_state<BattleTypes>(device.random_int(n_sides), device.random_int(n_sides));
     }
 };
 
+int main()
+{
+    // underlying net, device, batch size
+    auto l0 = std::make_shared<LearnerImpl<Net, torch::optim::SGD>>(Net{}, torch::kCUDA, 1024);
+    auto l1 = std::make_shared<LearnerImpl<Net, torch::optim::SGD>>(Net{}, torch::kCUDA, 512);
+
+    std::vector<Learner> learners = {l0, l1};
+
+    const size_t sample_buffer_size = 1 << 16;
+    TrainingAndEval workspace{learners, sample_buffer_size};
+
+    workspace.eval();
+
+    return 0;
+}
 
 // void learn()
 // {
@@ -456,12 +521,3 @@ struct TrainingAndEval
 //         learning_rate *= std::exp(log_learning_rate_decay_per_checkpoint);
 //     }
 // }
-
-
-int main()
-{
-
-    auto x = std::make_shared<LearnerImpl<Net, torch::optim::SGD>>(Net{}, torch::kCUDA);
-
-    return 0;
-}

@@ -62,6 +62,8 @@ struct PinnedBuffers : LearnerBuffers
 
 struct DeviceBuffers : LearnerBuffers
 {
+    // add torch or cuda device
+
     DeviceBuffers() {}
 
     DeviceBuffers(const int size)

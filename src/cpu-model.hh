@@ -20,9 +20,9 @@ struct CPUModel : BattleTypes
         torch::Tensor input = torch::empty({1, 376});
         torch::Tensor joined_policy_indices = torch::empty({1, 18}, torch::kInt64);
 
-        Model()
+        Model(std::string path)
         {
-            torch::load(net, "../saved/model_20231009095620.pt");
+            torch::load(net, path);
             net->to(torch::kCPU);
             net->eval();
         }
