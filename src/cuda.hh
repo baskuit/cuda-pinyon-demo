@@ -24,6 +24,10 @@ struct LearnerBuffers
     int64_t *joined_policy_index_buffer;
 };
 
+void switch_device(
+    const int device
+);
+
 void alloc_actor_buffers(
     ActorBuffers &buffer_data,
     const long int batch_size);
@@ -66,8 +70,9 @@ struct DeviceBuffers : LearnerBuffers
 
     DeviceBuffers() {}
 
-    DeviceBuffers(const int size)
+    DeviceBuffers(const int size, const int device = 0)
     {
+        
         alloc_device_buffers(*this, size);
     }
 

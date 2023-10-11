@@ -53,6 +53,11 @@ void dealloc_actor_buffers(
     cudaFree(buffer_data.joined_policy_index_buffer);
 }
 
+void switch_device(
+    const int device)
+{
+}
+
 namespace Kernels
 {
     __global__ void convert_battle_bytes_to_floats(

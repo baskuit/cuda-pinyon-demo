@@ -18,6 +18,7 @@ namespace Options
     const size_t partial_iterations = 1 << 8;
     const float full_search_prob = .25;
     const int berth = 1 << 8;
+    const size_t max_devices = 4;
 
     const int metric_history_size = 100;
 };
@@ -25,6 +26,15 @@ namespace Options
 #include "./src/nn.hh"
 #include "./src/battle.hh"
 #include "./src/cpu-model.hh"
+
+void dummy_data(
+    LearnerBuffers sample_buffers,
+    const size_t count)
+{
+    for (size_t i = 0; i < count; ++i)
+    {
+    }
+}
 
 // Pinyon type list for the entire program: Single threaded search on battles using Monte-Carlo eval.
 using Types = TreeBandit<Exp3<MonteCarloModel<BattleTypes>>, DefaultNodes>;
@@ -82,6 +92,8 @@ struct LearnerData
     const float policy_loss_weight;
     const float base_learning_rate;
     const float log_learning_rate_decay;
+    torch::nn::MSELoss mse{};
+    torch::nn::CrossEntropyLoss cel{};
 
     LearnerData(
         const torch::Device device = torch::kCPU,
@@ -130,6 +142,63 @@ struct LearnerImpl : LearnerData
         return W::make_model<TreeBanditSearchModel<TreeBandit<Exp3<CPUModel<Net>>>>>(
             typename TreeBanditSearchModel<TreeBandit<Exp3<CPUModel<Net>>>>::Model{Options::full_iterations, {}, {""}, {}});
     }
+
+    void step(
+        LearnerBuffers learn_buffers
+    )
+    {
+        torch::Tensor float_input =
+            torch::from_blob(
+                learn_buffers.float_input_buffer,
+                {this->batch_size, n_bytes_battle})
+                .to(net->device);
+
+        torch::Tensor value_data =
+            torch::from_blob(
+                learn_buffers.value_data_buffer,
+                {this->batch_size, 2})
+                .to(net->device);
+        torch::Tensor q = value_data.index({"...", torch::indexing::Slice{0, 1, 1}});
+        torch::Tensor z = value_data.index({"...", torch::indexing::Slice{1, 2, 1}});
+        torch::Tensor value_target = .5 * q + .5 * z;
+
+        torch::Tensor joined_policy_indices =
+            torch::from_blob(
+                learn_buffers.joined_policy_index_buffer,
+                {this->batch_size, 18}, {torch::kInt64})
+                .to(torch::kCUDA);
+        torch::Tensor joined_policy_target =
+            torch::from_blob(
+                learn_buffers.joined_policy_buffer,
+                {this->batch_size, 18})
+                .to(net->device);
+        torch::cuda::synchronize();
+
+        torch::Tensor row_policy_target = joined_policy_target.index({"...", torch::indexing::Slice{0, 9, 1}});
+        torch::Tensor col_policy_target = joined_policy_target.index({"...", torch::indexing::Slice{9, 18, 1}});
+        row_policy_target /= row_policy_target.norm(1, {1}, true);
+        col_policy_target /= col_policy_target.norm(1, {1}, true);
+
+        NetOutput output = net->forward(float_input, joined_policy_indices);
+
+        torch::Tensor value_loss =
+            this->mse(output.value, value_target);
+        torch::Tensor row_policy_loss =
+            torch::nn::functional::kl_div(
+                output.row_log_policy,
+                row_policy_target,
+                torch::nn::functional::KLDivFuncOptions(torch::kBatchMean));
+        torch::Tensor col_policy_loss =
+            torch::nn::functional::kl_div(
+                output.col_log_policy,
+                col_policy_target,
+                torch::nn::functional::KLDivFuncOptions(torch::kBatchMean));
+
+        torch::Tensor loss = value_loss + this->policy_loss_weight * (row_policy_loss + col_policy_loss);
+        loss.backward();
+        optimizer.step();
+        optimizer.zero_grad();
+    }
 };
 
 using Learner = std::shared_ptr<LearnerData>;
@@ -166,6 +235,7 @@ struct TrainingAndEval
 
     bool run_learn = false;
     bool run_actor = true;
+    bool run_eval = false;
 
     TrainingAndEval(
         std::vector<Learner> &learners,
@@ -243,21 +313,6 @@ struct TrainingAndEval
         }
     }
 
-    void learn_fetch()
-    {
-        const int start = (sample_index.load() + berth) % sample_buffer_size;
-        // sample_mutex.lock();
-        // copy_sample_to_learn_buffer(
-        //     learn_buffers,
-        //     sample_buffers,
-        //     index_buffers,
-        //     start,
-        //     sample_buffer_size - 2 * berth,
-        //     sample_buffer_size,
-        //     learn_buffer_size);
-        // sample_mutex.unlock();
-    };
-
     void actor()
     {
         PinnedActorBuffers buffers{200};
@@ -277,7 +332,9 @@ struct TrainingAndEval
                 {
                     buffers.value_data_buffer[2 * i + 1] = state.payoff.get_row_value().get();
                 }
-                // actor_store(buffers, buffer_index);
+
+                actor_store(buffers, buffer_index);
+
                 buffer_index = 0;
                 state = Types::State{device.random_int(n_sides), device.random_int(n_sides)};
                 state.randomize_transition(device);
@@ -326,10 +383,8 @@ struct TrainingAndEval
         }
     }
 
-    void learn()
+    void learn(const int device = 0)
     {
-        const int n_devices = learner_device_groupings.size();
-
         while (!run_learn)
         {
             sleep(1);
@@ -337,48 +392,32 @@ struct TrainingAndEval
 
         while (run_learn)
         {
-            for (int device_index = 0; device_index < n_devices; ++device_index)
+            for (const Learner learner : learner_device_groupings[device])
             {
-
-                const torch::Device device = devices[device_index];
-
-                for (const Learner learner : learner_device_groupings[device_index])
-                {
-
-                    // learner is a net on device, needs to be sampled and trained
-                }
+                const int start = (sample_index.load() + berth) % sample_buffer_size;
+                // sample_mutex.lock();
+                // copy_sample_to_learn_buffer(
+                //     learn_buffers,
+                //     sample_buffers,
+                //     start,
+                //     sample_buffer_size - 2 * berth,
+                //     sample_buffer_size,
+                //     learner->batch_size);
+                // sample_mutex.unlock();
             }
         }
     }
 
-    void run(
-        const size_t n_actor_threads,
-        const size_t n_samples)
-    {
-        train(n_actor_threads);
-        eval();
-    }
-
-    void train(
-        const size_t n_actor_threads)
-    {
-        std::thread actor_threads[n_actor_threads];
-        for (int i = 0; i < n_actor_threads; ++i)
-        {
-            actor_threads[i] = std::thread(&TrainingAndEval::actor, this);
-        }
-        std::thread learn_thread{&TrainingAndEval::learn, this};
-        for (int i = 0; i < n_actor_threads; ++i)
-        {
-            actor_threads[i].join();
-        }
-        learn_thread.join();
-    }
-
     void eval()
     {
-        // create W::Model for the NN behind each learner
-        // W::Model based on CPUModel::Model
+        while (!run_eval)
+        {
+            run_eval = false;
+            sleep(1);
+        }
+
+        run_actor = false;
+        run_learn = false;
 
         std::vector<W::Types::Model> agents{};
         for (const Learner learner : learners)
@@ -394,11 +433,38 @@ struct TrainingAndEval
         arena_search.run_for_iterations(1 << 10, arena_device, arena_state, arena_model, root);
     }
 
-    // uint64_t -> W::Types::State function used for the arena state in eval phase
     static W::Types::State battle_generator(SimpleTypes::Seed seed)
     {
         SimpleTypes::PRNG device{seed};
         return W::make_state<BattleTypes>(device.random_int(n_sides), device.random_int(n_sides));
+    }
+
+    void run(
+        const size_t n_actor_threads)
+    {
+        const size_t n_devices = devices.size();
+        std::thread actor_threads[n_actor_threads];
+        std::thread learn_threads[Options::max_devices];
+
+        for (int i = 0; i < n_actor_threads; ++i)
+        {
+            actor_threads[i] = std::thread(&TrainingAndEval::actor, this);
+        }
+        for (int i = 0; i < n_devices; ++i)
+        {
+            learn_threads[i] = std::thread(&TrainingAndEval::learn, this, i);
+        }
+        std::thread eval_thread{&TrainingAndEval::eval, this};
+
+        for (int i = 0; i < n_actor_threads; ++i)
+        {
+            actor_threads[i].join();
+        }
+        for (int i = 0; i < n_devices; ++i)
+        {
+            learn_threads[i].join();
+        }
+        eval_thread.join();
     }
 };
 
@@ -437,67 +503,6 @@ int main()
 //         {
 
 //             learn_fetch();
-
-//             torch::Tensor float_input =
-//                 torch::from_blob(
-//                     learn_buffers.float_input_buffer,
-//                     {learn_buffer_size, n_bytes_battle})
-//                     .to(net->device);
-
-//             torch::Tensor value_data =
-//                 torch::from_blob(
-//                     learn_buffers.value_data_buffer,
-//                     {learn_buffer_size, 2})
-//                     .to(net->device);
-//             torch::Tensor q = value_data.index({"...", torch::indexing::Slice{0, 1, 1}});
-//             torch::Tensor z = value_data.index({"...", torch::indexing::Slice{1, 2, 1}});
-//             torch::Tensor value_target = .5 * q + .5 * z;
-
-//             torch::Tensor joined_policy_indices =
-//                 torch::from_blob(
-//                     learn_buffers.joined_policy_index_buffer,
-//                     {learn_buffer_size, 18}, {torch::kInt64})
-//                     .to(torch::kCUDA);
-//             torch::Tensor joined_policy_target =
-//                 torch::from_blob(
-//                     learn_buffers.joined_policy_buffer,
-//                     {learn_buffer_size, 18})
-//                     .to(net->device);
-//             torch::cuda::synchronize();
-
-//             torch::Tensor row_policy_target = joined_policy_target.index({"...", torch::indexing::Slice{0, 9, 1}});
-//             torch::Tensor col_policy_target = joined_policy_target.index({"...", torch::indexing::Slice{9, 18, 1}});
-//             row_policy_target /= row_policy_target.norm(1, {1}, true);
-//             col_policy_target /= col_policy_target.norm(1, {1}, true);
-
-//             NetOutput output = net->forward(float_input, joined_policy_indices);
-
-//             torch::Tensor value_loss =
-//                 mse(output.value, value_target);
-//             torch::Tensor row_policy_loss =
-//                 torch::nn::functional::kl_div(
-//                     output.row_log_policy,
-//                     row_policy_target,
-//                     torch::nn::functional::KLDivFuncOptions(torch::kBatchMean));
-//             torch::Tensor col_policy_loss =
-//                 torch::nn::functional::kl_div(
-//                     output.col_log_policy,
-//                     col_policy_target,
-//                     torch::nn::functional::KLDivFuncOptions(torch::kBatchMean));
-
-//             if (step == 0)
-//             {
-//                 std::cout << "value target (first 4 entries)" << std::endl;
-//                 pt(value_target.index({torch::indexing::Slice(0, 4, 1)}));
-//                 std::cout << "value output (first 4 entries)" << std::endl;
-//                 pt(output.value.index({torch::indexing::Slice(0, 4, 1)}));
-//                 std::cout << "value loss (batch): " << value_loss.item().toFloat() << std::endl;
-//             }
-
-//             torch::Tensor loss = value_loss + policy_loss_weight * (row_policy_loss + col_policy_loss);
-//             loss.backward();
-//             optimizer.step();
-//             optimizer.zero_grad();
 
 //             learn_rate = learn_metric.update_and_get_rate(learn_buffer_size);
 //             while (learn_rate > max_learn_actor_ratio * actor_rate)
