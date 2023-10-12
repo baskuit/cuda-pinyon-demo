@@ -152,8 +152,9 @@ struct BattleTypes : TypeList
         }
 
         // not pinyon interface, but reasonable to store here to unclog main.cc
+        template <typename Buffers>
         void copy_to_buffer(
-            ActorBuffers buffers,
+            Buffers buffers,
             const size_t buffer_index,
             const int rows, const int cols
             )

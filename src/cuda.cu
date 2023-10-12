@@ -56,6 +56,7 @@ void dealloc_actor_buffers(
 void switch_device(
     const int device)
 {
+    cudaSetDevice(device);
 }
 
 namespace Kernels
@@ -82,7 +83,6 @@ namespace Kernels
     __global__ void __sample_kernel(
         LearnerBuffers tgt,
         const LearnerBuffers src,
-        LearnerBuffers index_buffers,
         const int start,
         const int count,
         const int max_index,
@@ -109,7 +109,6 @@ namespace Kernels
             memcpy(
                 &tgt.joined_policy_index_buffer[tid * 18],
                 src.joined_policy_index_buffer + sample_index * 18, 18 * sizeof(int64_t));
-            index_buffers.joined_policy_index_buffer[tid] = sample_index;
         }
     }
 };
@@ -117,7 +116,6 @@ namespace Kernels
 void copy_sample_to_learn_buffer(
     LearnerBuffers learn_buffers,
     const LearnerBuffers sample_buffers,
-    LearnerBuffers index_buffers,
     const int start_index,
     const int count,
     const int max_index,
@@ -127,7 +125,6 @@ void copy_sample_to_learn_buffer(
     Kernels::__sample_kernel<<<n_blocks, 32>>>(
         learn_buffers,
         sample_buffers,
-        index_buffers,
         start_index, count, max_index, n_samples);
     cudaDeviceSynchronize();
 }

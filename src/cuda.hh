@@ -72,7 +72,7 @@ struct DeviceBuffers : LearnerBuffers
 
     DeviceBuffers(const int size, const int device = 0)
     {
-        
+        // switch_device(device);
         alloc_device_buffers(*this, size);
     }
 
@@ -106,7 +106,6 @@ struct PinnedActorBuffers : ActorBuffers
 void copy_sample_to_learn_buffer(
     LearnerBuffers learn_buffers,
     const LearnerBuffers sample_buffers,
-    LearnerBuffers index_buffers,
     const int start_index,
     const int count,
     const int max_index,
