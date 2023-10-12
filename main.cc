@@ -19,10 +19,6 @@ namespace Options
     const float full_search_prob = .25;
     const int berth = 1 << 8;
     const size_t max_devices = 4;
-
-    const torch::Device device0{torch::kCUDA, 0};
-    const torch::Device device1{torch::kCUDA, 1};
-
     const int metric_history_size = 100;
 };
 
@@ -118,7 +114,7 @@ shared_ptr type erasure is used because we need different underlying NN and opti
 
 struct LearnerData
 {
-    const torch::Device device;
+    const int cuda_device_index;
     const int batch_size;
     const float policy_loss_weight;
     const float base_learning_rate;
@@ -128,12 +124,12 @@ struct LearnerData
     std::vector<std::string> saves{};
 
     LearnerData(
-        const torch::Device device = torch::kCPU,
+        const int cuda_device_index = -1;
         const int batch_size = Options::batch_size,
         const float base_learning_rate = Options::base_learning_rate,
         const float log_learning_rate_decay = Options::log_learning_rate_decay,
         const float policy_loss_weight = Options::policy_loss_weight)
-        : device{device},
+        : cuda_device_index{cuda_device_index},
           batch_size{batch_size},
           base_learning_rate{base_learning_rate},
           log_learning_rate_decay{log_learning_rate_decay},
@@ -141,10 +137,10 @@ struct LearnerData
     {
     }
 
-    Metric metric{100};
+    Metric metric{Options::metric_history_size};
     uint64_t n_samples = 0;
     float learning_rate = base_learning_rate;
-    // std::string get_string(const int) const { return ""; }
+
     virtual W::Types::Model make_w_model() const = 0;
     virtual void step(LearnerBuffers, bool) = 0;
 };
@@ -255,8 +251,9 @@ struct TrainingAndEval
     // to keep track of training lifetime for 'divide-and-conquer` eval
     std::vector<std::vector<std::string>> learner_version_strings;
     // iterate over these to train on multiple GPUs at once
-    std::vector<torch::Device> devices;
-    std::vector<std::vector<Learner>> learner_device_groupings;
+    std::vector<int> device_indices;
+    // std::vector<std::vector<Learner>> learner_device_groupings;
+    std::unordered_map<int, std::vector<Learner>> learner_device_groupings;
 
     PinnedBuffers sample_buffers;
     std::atomic<uint64_t> sample_index{0};
@@ -295,25 +292,25 @@ struct TrainingAndEval
         for (Learner learner : learners)
         {
             bool new_device = true;
-            size_t device_index = 0;
-            for (const auto &device : devices)
+            for (const int device_index : device_indices)
             {
-                if (device == learner->device)
+                if (device_index == learner->cuda_device_index)
                 {
                     new_device = false;
                     break;
                 }
-                ++device_index;
             }
             if (new_device)
             {
-                devices.push_back(learner->device);
-                learner_device_groupings.push_back({learner});
+                device_indices.push_back(learner->cuda_device_index);
+                // learner_device_groupings.push_back({learner});
+                learner_device_groupings[learner->cuda_device_index] = {learner};
+
                 max_batch_size_by_device.push_back(learner->batch_size);
             }
             else
             {
-                learner_device_groupings[device_index].push_back(learner);
+                learner_device_groupings[learner->cuda_device_index].push_back(learner);
                 if (learner->batch_size > max_batch_size_by_device[device_index])
                 {
                     max_batch_size_by_device[device_index] = learner->batch_size;
@@ -428,7 +425,7 @@ struct TrainingAndEval
         }
     }
 
-    void learn(const int device = 0)
+    void learn(const int device_index = 0)
     {
         while (!run_learn)
         {
@@ -440,10 +437,12 @@ struct TrainingAndEval
         {
             
             // DeviceBuffers &learn_buffers = learn_buffers_by_device[device];
-            switch_device(device);
-            DeviceBuffers learn_buffers{2048, device};
+            switch_device(device_index);
+            DeviceBuffers learn_buffers{2048, device_index};
+            
+            std::vector<Learner> &learners = learner_device_groupings[device_index];
 
-            for (const Learner learner : learner_device_groupings[device])
+            for (const Learner &learner : learners)
             {
                 const int start = (sample_index.load() + berth) % sample_buffer_size;
                 // sample_mutex.lock();
@@ -458,13 +457,12 @@ struct TrainingAndEval
 
                 bool print = false;
                 if (step % 100 == 0) {
-                    std::cout << "device: " << device << std::endl;
+                    std::cout << "device index: " << device_index << std::endl;
                     print = true;
                 }
                 learner->step(learn_buffers, print);
             }
             ++step;
-            // sleep(2);
         }
     }
 
