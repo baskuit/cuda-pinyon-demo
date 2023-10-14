@@ -557,8 +557,8 @@ int main()
     TrainingAndEval workspace{learners, sample_buffer_size};
     dummy_data(workspace.sample_buffers, workspace.sample_buffer_size);
     workspace.run_actor = false;
-    workspace.run_learn = false;
-    workspace.run_eval = true;
+    workspace.run_learn = true;
+    workspace.run_eval = false;
     workspace.run();
     return 0;
 }

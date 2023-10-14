@@ -93,11 +93,11 @@ public:
         torch::Tensor col_logits = fc_col_logits(torch::relu(fc_col_logits_pre(tower_)));
         torch::Tensor row_policy_indices = joined_policy_indices.index({"...", torch::indexing::Slice{0, 9, 1}});
         torch::Tensor col_policy_indices = joined_policy_indices.index({"...", torch::indexing::Slice{9, 18, 1}});
-        // torch::Tensor neg_inf = -1 * (1 << 10) * torch::ones({input.size(0), 1}, torch::kInt64).to(input.device());
-        // torch::Tensor row_logits_picked = torch::gather(torch::cat({neg_inf, row_logits}, 1), 1, row_policy_indices);
-        // torch::Tensor col_logits_picked = torch::gather(torch::cat({neg_inf, col_logits}, 1), 1, col_policy_indices);
-        torch::Tensor row_logits_picked = torch::gather(row_logits, 1, row_policy_indices);
-        torch::Tensor col_logits_picked = torch::gather(col_logits, 1, col_policy_indices);
+        torch::Tensor neg_inf = -1 * (1 << 10) * torch::ones({input.size(0), 1}, torch::kInt64).to(input.device());
+        torch::Tensor row_logits_picked = torch::gather(torch::cat({neg_inf, row_logits}, 1), 1, row_policy_indices);
+        torch::Tensor col_logits_picked = torch::gather(torch::cat({neg_inf, col_logits}, 1), 1, col_policy_indices);
+        // torch::Tensor row_logits_picked = torch::gather(row_logits, 1, row_policy_indices);
+        // torch::Tensor col_logits_picked = torch::gather(col_logits, 1, col_policy_indices);
         torch::Tensor r = torch::log_softmax(row_logits_picked, 1);
         torch::Tensor c = torch::log_softmax(col_logits_picked, 1);
         torch::Tensor value = torch::sigmoid(fc_value(torch::relu(fc_value_pre(tower_))));

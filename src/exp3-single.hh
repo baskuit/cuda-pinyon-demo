@@ -2,21 +2,28 @@
 #include <algorithm/algorithm.hh>
 #include <tree/tree.hh>
 
+/*
+
+Modification of vanilla Exp3 for the case of one-shot symmetric games, e.g. Arena
+
+There is only one set of gains, visits stats, and the select function is guaranteed not to produce mirror matches.
+
+Arena is used with multithreaded bandit, so off-policy and singlethreaded functions were removed
+
+*/
+
 template <CONCEPT(IsValueModelTypes, Types)>
-struct Exp3 : Types
+struct Exp3Single : Types
 {
 
     using Real = typename Types::Real;
-    // alias decl kill intellisense currently but you only lose canonicalize()
 
     struct MatrixStats
     {
-        typename Types::VectorReal row_gains;
-        typename Types::VectorReal col_gains;
-        typename Types::VectorInt row_visits;
-        typename Types::VectorInt col_visits;
+        typename Types::VectorReal gains;
+        typename Types::VectorInt visits;
 
-        int visits = 0;
+        int n = 0;
         PairReal<Real> value_total{0, 0};
     };
     struct ChanceStats
@@ -50,17 +57,16 @@ struct Exp3 : Types
             Types::VectorReal &row_strategy,
             Types::VectorReal &col_strategy) const
         {
-            row_strategy.resize(stats.row_visits.size());
-            col_strategy.resize(stats.col_visits.size());
-            math::power_norm(stats.row_visits, row_strategy.size(), 1, row_strategy);
-            math::power_norm(stats.col_visits, col_strategy.size(), 1, col_strategy);
+            row_strategy.resize(stats.visits.size());
+            math::power_norm(stats.visits, row_strategy.size(), 1, row_strategy);
+            col_strategy = row_strategy;
         }
 
         void get_empirical_value(
             const MatrixStats &stats,
             Types::Value &value) const
         {
-            const Real den = typename Types::Q{1, (stats.visits + (stats.visits == 0))};
+            const Real den = typename Types::Q{1, (stats.n + (stats.n == 0))};
             if constexpr (Types::Value::IS_CONSTANT_SUM)
             {
                 value = typename Types::Value{typename Types::Real{stats.value_total.get_row_value() * den}};
@@ -76,11 +82,7 @@ struct Exp3 : Types
             Types::VectorReal &row_strategy,
             Types::VectorReal &col_strategy) const
         {
-            row_strategy.resize(stats.row_visits.size());
-            col_strategy.resize(stats.col_visits.size());
-            denoise(row_strategy, col_strategy);
-            math::power_norm(stats.row_visits, row_strategy.size(), 1, row_strategy);
-            math::power_norm(stats.col_visits, col_strategy.size(), 1, col_strategy);
+            get_empirical_strategies(stats, row_strategy, col_strategy);
         }
 
         void get_refined_value(
@@ -90,7 +92,6 @@ struct Exp3 : Types
             get_empirical_value(stats, value);
         }
 
-        // protected:
         void initialize_stats(
             int iterations,
             const Types::State &state,
@@ -105,86 +106,8 @@ struct Exp3 : Types
             const size_t &cols,
             const Types::ModelOutput &output) const
         {
-            stats.row_visits.resize(rows, 0);
-            stats.col_visits.resize(cols, 0);
-            stats.row_gains.resize(rows, 0);
-            stats.col_gains.resize(cols, 0);
-        }
-
-        void select(
-            Types::PRNG &device,
-            const MatrixStats &stats,
-            Outcome &outcome) const
-        {
-            const size_t rows = stats.row_gains.size();
-            const size_t cols = stats.col_gains.size();
-            const auto &one_minus_gamma = this->one_minus_gamma;
-            typename Types::VectorReal row_forecast(rows);
-            typename Types::VectorReal col_forecast(cols);
-            if (rows == 1)
-            {
-                row_forecast[0] = Rational<>{1};
-            }
-            else
-            {
-                const Real eta{gamma / static_cast<Real>(rows)};
-                softmax(row_forecast, stats.row_gains, rows, eta);
-                std::transform(
-                    row_forecast.begin(), row_forecast.begin() + rows, row_forecast.begin(),
-                    [eta, one_minus_gamma](Real value)
-                    { return one_minus_gamma * value + eta; });
-            }
-            if (cols == 1)
-            {
-                col_forecast[0] = Rational<>{1};
-            }
-            else
-            {
-                const Real eta{gamma / static_cast<Real>(cols)};
-                softmax(col_forecast, stats.col_gains, cols, eta);
-                std::transform(
-                    col_forecast.begin(), col_forecast.begin() + cols, col_forecast.begin(),
-                    [eta, one_minus_gamma](Real value)
-                    { return one_minus_gamma * value + eta; });
-            }
-            const int row_idx = device.sample_pdf(row_forecast, rows);
-            const int col_idx = device.sample_pdf(col_forecast, cols);
-            outcome.row_idx = row_idx;
-            outcome.col_idx = col_idx;
-            outcome.row_mu = static_cast<Real>(row_forecast[row_idx]);
-            outcome.col_mu = static_cast<Real>(col_forecast[col_idx]);
-        }
-
-        void update_matrix_stats(
-            MatrixStats &stats,
-            const Outcome &outcome) const
-        {
-            stats.value_total += PairReal<Real>{outcome.value.get_row_value(), outcome.value.get_col_value()};
-            stats.visits += 1;
-            stats.row_visits[outcome.row_idx] += 1;
-            stats.col_visits[outcome.col_idx] += 1;
-            if ((stats.row_gains[outcome.row_idx] += outcome.value.get_row_value() / outcome.row_mu) >= 0)
-            {
-                const auto max = stats.row_gains[outcome.row_idx];
-                for (auto &v : stats.row_gains)
-                {
-                    v -= max;
-                }
-            }
-            if ((stats.col_gains[outcome.col_idx] += outcome.value.get_col_value() / outcome.col_mu) >= 0)
-            {
-                const auto max = stats.col_gains[outcome.col_idx];
-                for (auto &v : stats.col_gains)
-                {
-                    v -= max;
-                }
-            }
-        }
-
-        void update_chance_stats(
-            ChanceStats &stats,
-            const Outcome &outcome) const
-        {
+            stats.visits.resize(rows, 0);
+            stats.gains.resize(rows, 0);
         }
 
         // multithreaded
@@ -196,45 +119,30 @@ struct Exp3 : Types
             Types::Mutex &mutex) const
         {
             mutex.lock();
-            typename Types::VectorReal row_forecast(stats.row_gains);
-            typename Types::VectorReal col_forecast(stats.col_gains);
+            typename Types::VectorReal forecast(stats.gains);
             mutex.unlock();
-            const size_t rows = row_forecast.size();
-            const size_t cols = col_forecast.size();
+            const size_t rows = stats.gains.size();
+            assert(rows > 1);
             const auto &one_minus_gamma = this->one_minus_gamma;
+            typename Types::VectorReal forecast(rows);
 
-            if (rows == 1)
+            const Real eta{gamma / static_cast<Real>(rows)};
+            softmax(forecast, stats.gains, rows, eta);
+            std::transform(
+                forecast.begin(), forecast.begin() + rows, forecast.begin(),
+                [eta, one_minus_gamma](Real value)
+                { return one_minus_gamma * value + eta; });
+
+            const int row_idx = device.sample_pdf(forecast, rows);
+            int col_idx = row_idx;
+            while (col_idx == row_idx)
             {
-                row_forecast[0] = Rational<>{1};
+                col_idx = device.sample_pdf(forecast, rows);
             }
-            else
-            {
-                const Real eta{gamma / static_cast<Real>(rows)};
-                softmax(row_forecast, row_forecast, rows, eta);
-                std::transform(
-                    row_forecast.begin(), row_forecast.begin() + rows, row_forecast.begin(),
-                    [eta, one_minus_gamma](Real value)
-                    { return one_minus_gamma * value + eta; });
-            }
-            if (cols == 1)
-            {
-                col_forecast[0] = Rational<>{1};
-            }
-            else
-            {
-                const Real eta{gamma / static_cast<Real>(cols)};
-                softmax(col_forecast, col_forecast, cols, eta);
-                std::transform(
-                    col_forecast.begin(), col_forecast.begin() + cols, col_forecast.begin(),
-                    [eta, one_minus_gamma](Real value)
-                    { return one_minus_gamma * value + eta; });
-            }
-            const int row_idx = device.sample_pdf(row_forecast, rows);
-            const int col_idx = device.sample_pdf(col_forecast, cols);
             outcome.row_idx = row_idx;
             outcome.col_idx = col_idx;
-            outcome.row_mu = static_cast<Real>(row_forecast[row_idx]);
-            outcome.col_mu = static_cast<Real>(col_forecast[col_idx]);
+            outcome.row_mu = forecast[row_idx];
+            outcome.col_mu = forecast[col_idx] / (1 - outcome.row_mu);
         }
 
         void update_matrix_stats(
@@ -244,21 +152,21 @@ struct Exp3 : Types
         {
             mutex.lock();
             stats.value_total += outcome.value;
-            stats.visits += 1;
-            stats.row_visits[outcome.row_idx] += 1;
-            stats.col_visits[outcome.col_idx] += 1;
-            if ((stats.row_gains[outcome.row_idx] += outcome.value.get_row_value() / outcome.row_mu) >= 0)
+            stats.n += 1;
+            stats.visits[outcome.row_idx] += 1;
+            stats.visits[outcome.col_idx] += 1;
+            if ((stats.gains[outcome.row_idx] += outcome.value.get_row_value() / outcome.row_mu) >= 0)
             {
-                const auto max = stats.row_gains[outcome.row_idx];
-                for (auto &v : stats.row_gains)
+                const auto max = stats.gains[outcome.row_idx];
+                for (auto &v : stats.gains)
                 {
                     v -= max;
                 }
             }
-            if ((stats.col_gains[outcome.col_idx] += outcome.value.get_col_value() / outcome.col_mu) >= 0)
+            if ((stats.gains[outcome.col_idx] += outcome.value.get_col_value() / outcome.col_mu) >= 0)
             {
-                const auto max = stats.col_gains[outcome.col_idx];
-                for (auto &v : stats.col_gains)
+                const auto max = stats.gains[outcome.col_idx];
+                for (auto &v : stats.gains)
                 {
                     v -= max;
                 }
@@ -270,57 +178,6 @@ struct Exp3 : Types
             ChanceStats &stats,
             const Outcome &outcome,
             Types::Mutex &mutex) const
-        {
-        }
-
-        // off-policy
-
-        void update_matrix_stats_offpolicy(
-            MatrixStats &stats,
-            const Outcome &outcome) const
-        {
-            stats.value_total += PairReal<Real>{outcome.value.get_row_value(), outcome.value.get_col_value()};
-            stats.visits += 1;
-            stats.row_visits[outcome.row_idx] += 1;
-            stats.col_visits[outcome.col_idx] += 1;
-            if ((stats.row_gains[outcome.row_idx] += outcome.value.get_row_value() / outcome.row_mu) >= 0)
-            {
-                const auto max = stats.row_gains[outcome.row_idx];
-                for (auto &v : stats.row_gains)
-                {
-                    v -= max;
-                }
-            }
-            if ((stats.col_gains[outcome.col_idx] += outcome.value.get_col_value() / outcome.col_mu) >= 0)
-            {
-                const auto max = stats.col_gains[outcome.col_idx];
-                for (auto &v : stats.col_gains)
-                {
-                    v -= max;
-                }
-            }
-        }
-
-        void update_chance_stats_offpolicy(
-            ChanceStats &stats,
-            const Outcome &outcome) const
-        {
-        }
-
-        void expand_state_part(
-            MatrixStats &stats,
-            const size_t &rows,
-            const size_t &cols) const
-        {
-            stats.row_visits.resize(rows, 0);
-            stats.col_visits.resize(cols, 0);
-            stats.row_gains.resize(rows, 0);
-            stats.col_gains.resize(cols, 0);
-        }
-
-        void expand_inference_part(
-            MatrixStats &stats,
-            const Types::ModelOutput &output) const
         {
         }
 
@@ -367,6 +224,6 @@ struct Exp3 : Types
                     [eta, one_minus_gamma](Real value)
                     { return (value - eta) / one_minus_gamma; });
             }
-        } // TODO can produce negative values but this shouldnt cause problems.
+        }
     };
 };

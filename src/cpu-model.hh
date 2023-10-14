@@ -29,9 +29,9 @@ struct CPUModel : BattleTypes
 
         Model(const Net &other)
         {
-            for (auto &targetParam : net.parameters())
+            for (auto &targetParam : net->parameters())
             {
-                for (const auto &sourceParam : other.parameters())
+                for (const auto &sourceParam : other->parameters())
                 {
                     if (targetParam.name() == sourceParam.name())
                     {
