@@ -26,6 +26,7 @@ namespace Options
 #include "./src/nn.hh"
 #include "./src/battle.hh"
 #include "./src/cpu-model.hh"
+#include "./src/exp3-single.hh"
 
 void dummy_data(
     LearnerBuffers sample_buffers,
@@ -494,7 +495,7 @@ struct TrainingAndEval
         {
             agents.emplace_back(learner->make_w_model());
         }
-        using T = TreeBanditThreaded<Exp3<MonteCarloModel<Arena>>>;
+        using T = TreeBanditThreaded<Exp3Single<MonteCarloModel<Arena>>>;
         T::PRNG arena_device{};
         T::State arena_state{&battle_generator, agents};
         T::Model arena_model{0};
@@ -541,14 +542,14 @@ struct TrainingAndEval
 
 int main()
 {
-    auto l0 = std::make_shared<LearnerImpl<Net, torch::optim::SGD>>(
-        Net{}, char{0}, // Net, CUDA device index
+    auto l0 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        FCResNet{}, char{0}, // Net, CUDA device index
         1024);          // optional hyperparams e.g. batch size etc.
-    auto l1 = std::make_shared<LearnerImpl<Net, torch::optim::SGD>>(
-        Net{}, char{0},
+    auto l1 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        FCResNet{}, char{0},
         512);
-    auto l2 = std::make_shared<LearnerImpl<Net, torch::optim::SGD>>(
-        Net{}, char{1},
+    auto l2 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        FCResNet{}, char{1},
         1024);
 
     std::vector<Learner> learners = {l0, l1, l2};
@@ -557,8 +558,8 @@ int main()
     TrainingAndEval workspace{learners, sample_buffer_size};
     dummy_data(workspace.sample_buffers, workspace.sample_buffer_size);
     workspace.run_actor = false;
-    workspace.run_learn = true;
-    workspace.run_eval = false;
+    workspace.run_learn = false;
+    workspace.run_eval = true;
     workspace.run();
     return 0;
 }

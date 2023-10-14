@@ -57,7 +57,7 @@ struct NetOutput
     torch::Tensor value, row_log_policy, col_log_policy;
 };
 
-class NetImpl : public torch::nn::Module
+class FCResNetImpl : public torch::nn::Module
 {
 public:
     torch::nn::Linear fc{nullptr};
@@ -69,7 +69,7 @@ public:
     torch::nn::Linear fc_col_logits_pre{nullptr};
     torch::nn::Linear fc_col_logits{nullptr};
 
-    NetImpl()
+    FCResNetImpl()
     {
         fc = register_module("fc_input", torch::nn::Linear(Options::input_size, Options::hidden_size));
         for (int i = 0; i < Options::n_res_blocks; ++i)
@@ -105,7 +105,7 @@ public:
     }
 };
 
-TORCH_MODULE(Net);
+TORCH_MODULE(FCResNet);
 
 /*
 

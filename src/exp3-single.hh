@@ -114,17 +114,13 @@ struct Exp3Single : Types
 
         void select(
             Types::PRNG &device,
-            const MatrixStats &stats, // TODO made const, does this fix bug?
-            Outcome &outcome,
-            Types::Mutex &mutex) const
+            const MatrixStats &stats,
+            Outcome &outcome) const
         {
-            mutex.lock();
             typename Types::VectorReal forecast(stats.gains);
-            mutex.unlock();
             const size_t rows = stats.gains.size();
             assert(rows > 1);
             const auto &one_minus_gamma = this->one_minus_gamma;
-            typename Types::VectorReal forecast(rows);
 
             const Real eta{gamma / static_cast<Real>(rows)};
             softmax(forecast, stats.gains, rows, eta);
@@ -142,7 +138,7 @@ struct Exp3Single : Types
             outcome.row_idx = row_idx;
             outcome.col_idx = col_idx;
             outcome.row_mu = forecast[row_idx];
-            outcome.col_mu = forecast[col_idx] / (1 - outcome.row_mu);
+            outcome.col_mu = forecast[col_idx] / (typename Types::Real{typename Types::Q{1}} - outcome.row_mu);
         }
 
         void update_matrix_stats(
@@ -176,8 +172,7 @@ struct Exp3Single : Types
 
         void update_chance_stats(
             ChanceStats &stats,
-            const Outcome &outcome,
-            Types::Mutex &mutex) const
+            const Outcome &outcome) const
         {
         }
 
