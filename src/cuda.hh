@@ -25,7 +25,7 @@ struct LearnerBuffers
 };
 
 void switch_device(
-    const int device
+    const char device_index
 );
 
 void alloc_actor_buffers(
@@ -70,9 +70,8 @@ struct DeviceBuffers : LearnerBuffers
 
     DeviceBuffers() {}
 
-    DeviceBuffers(const int size, const int device = 0)
+    DeviceBuffers(const int size, const char device_index = 0)
     {
-        // switch_device(device);
         alloc_device_buffers(*this, size);
     }
 

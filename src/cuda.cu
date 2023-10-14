@@ -54,9 +54,9 @@ void dealloc_actor_buffers(
 }
 
 void switch_device(
-    const int device)
+    const char device_index)
 {
-    cudaSetDevice(device);
+    cudaSetDevice(device_index);
 }
 
 namespace Kernels

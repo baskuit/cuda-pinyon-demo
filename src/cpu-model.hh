@@ -27,6 +27,23 @@ struct CPUModel : BattleTypes
             net->eval();
         }
 
+        Model(const Net &other)
+        {
+            for (auto &targetParam : net.parameters())
+            {
+                for (const auto &sourceParam : other.parameters())
+                {
+                    if (targetParam.name() == sourceParam.name())
+                    {
+                        targetParam.data() = sourceParam.data().clone();
+                        break;
+                    }
+                }
+            }
+            net->to(torch::kCPU);
+            net->eval();
+        }
+
         void inference(
             BattleTypes::State &&state,
             ModelOutput &output)
