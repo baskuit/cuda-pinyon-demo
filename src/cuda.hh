@@ -46,42 +46,6 @@ void dealloc_buffers(
 void dealloc_actor_buffers(
     ActorBuffers &buffer_data);
 
-struct PinnedBuffers : LearnerBuffers
-{
-    PinnedBuffers() {}
-
-    PinnedBuffers(const int size)
-    {
-        alloc_pinned_buffers(*this, size);
-    }
-
-    ~PinnedBuffers()
-    {
-        dealloc_buffers(*this);
-    }
-
-    PinnedBuffers(const PinnedBuffers &) = delete;
-    PinnedBuffers &operator=(const PinnedBuffers &) = delete;
-};
-
-struct PinnedActorBuffers : ActorBuffers
-{
-    PinnedActorBuffers() {}
-
-    PinnedActorBuffers(const int size)
-    {
-        alloc_actor_buffers(*this, size);
-    }
-
-    ~PinnedActorBuffers()
-    {
-        dealloc_actor_buffers(*this);
-    }
-
-    PinnedActorBuffers(const PinnedActorBuffers &) = delete;
-    PinnedActorBuffers &operator=(const PinnedActorBuffers &) = delete;
-};
-
 void copy_sample_to_learn_buffer(
     LearnerBuffers learn_buffers,
     const LearnerBuffers sample_buffers,

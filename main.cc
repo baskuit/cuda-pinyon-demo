@@ -271,7 +271,7 @@ struct TrainingAndEval
     std::unordered_map<char, int>
         device_batch_size{};
 
-    PinnedBuffers sample_buffers;
+    LearnerBuffers sample_buffers{};
     std::atomic<uint64_t> sample_index{0};
 
     const int sample_buffer_size;
@@ -295,8 +295,7 @@ struct TrainingAndEval
         std::vector<Learner> &learners,
         const int sample_buffer_size)
         : learners{learners},
-          sample_buffer_size{sample_buffer_size},
-          sample_buffers{sample_buffer_size}
+          sample_buffer_size{sample_buffer_size}
     {
         std::cout << "Init TrainingAndEval" << std::endl;
         const size_t n_learners = learners.size();
@@ -333,6 +332,7 @@ struct TrainingAndEval
             switch_device(pair.first);
             alloc_device_buffers(raw_learn_buffers[pair.first], pair.second);
         }
+        alloc_pinned_buffers(sample_buffers, sample_buffer_size);
     }
 
     ~TrainingAndEval()
@@ -342,9 +342,10 @@ struct TrainingAndEval
             switch_device(pair.first);
             dealloc_buffers(pair.second);
         }
+        dealloc_buffers(sample_buffers);
     }
 
-    void actor_store(const PinnedActorBuffers &actor_buffers, const int count)
+    void actor_store(const ActorBuffers &actor_buffers, const int count)
     {
         const uint64_t s = sample_index.fetch_add(count);
         const int sample_index_first = s % sample_buffer_size;
@@ -374,7 +375,8 @@ struct TrainingAndEval
 
     void actor()
     {
-        PinnedActorBuffers buffers{200};
+        ActorBuffers buffers{};
+        alloc_actor_buffers(buffers, 200);
         // resets every game, basically equivalent to turns sampled
         size_t buffer_index = 0;
         Types::PRNG device{};
@@ -441,6 +443,7 @@ struct TrainingAndEval
             state.apply_actions(state.row_actions[row_idx], state.col_actions[col_idx]);
             state.get_actions();
         }
+        dealloc_actor_buffers(buffers);
     }
 
     void learn(const char device_index = 0)
