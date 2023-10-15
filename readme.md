@@ -18,10 +18,12 @@ Here we:
 Pokemon is notoriously intractable domain for small-scale developers.
 
 * No fast simulators
+
 Reinforcement learning is not possible without a very fast environment model, something the community has sorely missed until the development of `pkmn/engine`. 
 The most popular and previously and only simulator is Pokemon Showdown, which is designed for extensibility over performance. Unfortunately this NodeJS app is orders of magnitude slower than even novice implementations of games like Chess, Shogi, etc. This is due mostly to the complexity of Pokemon and its reliance on conditional-logic, but it's also due to PS's language and design choices.
 
 * Unprincipled approaches and Scope
+
 Because of the previous point, most researchers opted to use supervised learning approaches. The Showdown team will grant access to replay data if you ask, and this data was used in many policy gradient based attempts.
 Imperfect information games like showdown are a well-known failure case for PG methods, at least prior to recent papers which claim that regularization can be used to ameliorate this.
 Search based methods are one alternative, but search in imperfect information games is prohibitively expensive in the RL context.
