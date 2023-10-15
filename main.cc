@@ -16,6 +16,7 @@ namespace Options
     const float max_learn_actor_ratio = 150;
     const size_t full_iterations = 1 << 10;
     const size_t partial_iterations = 1 << 8;
+    const size_t eval_iterations = 1 << 5;
     const float full_search_prob = .25;
     const int berth = 1 << 8;
     const size_t max_devices = 4;
@@ -41,7 +42,8 @@ void dummy_data(
     {
         input[b] = static_cast<float>(b);
     }
-    std::vector<int64_t> jpi{18};
+    std::vector<int64_t> jpi{};
+    jpi.resize(18);
     for (int b = 0; b < 18; ++b)
     {
         jpi[b] = b + 1;
@@ -179,7 +181,7 @@ struct LearnerImpl : LearnerData
         // defines type list where `Model` is the output of exp3 search with the CPU net as the model
         using SearchModelTypes = TreeBanditSearchModel<TreeBandit<Exp3<CPUModel<Net>>>>;
         return W::make_model<SearchModelTypes>( //                          CPUNet params
-            typename SearchModelTypes::Model{Options::full_iterations, {}, {net}, {.01}});
+            typename SearchModelTypes::Model{Options::eval_iterations, {}, {net}, {.01}});
     }
 
     void step(
@@ -373,6 +375,7 @@ struct TrainingAndEval
     void actor()
     {
         PinnedActorBuffers buffers{200};
+        // resets every game, basically equivalent to turns sampled
         size_t buffer_index = 0;
         Types::PRNG device{};
         Types::State state{device.random_int(n_sides), device.random_int(n_sides)};
@@ -443,17 +446,21 @@ struct TrainingAndEval
     void learn(const char device_index = 0)
     {
         switch_device(device_index);
-        std::cout << "start learn(), device: " << (int)device_index << std::endl;
+        // device-wide metric, remove?
+        Metric metric{Options::metric_history_size};
 
         while (!run_learn)
         {
             sleep(1);
         }
 
+        std::cout << "start learn(), device: " << (int)device_index << std::endl;
         size_t step = 0;
+        float rate = 0;
         while (run_learn)
         {
             LearnerBuffers learn_buffers = raw_learn_buffers[device_index];
+            // shadows member...
             std::vector<Learner> &learners = learner_device_groupings[device_index];
 
             for (const Learner &learner : learners)
@@ -471,16 +478,34 @@ struct TrainingAndEval
                 if (step % 1000 == 0)
                 {
                     std::cout << "learner: " << learner.get() << "; device index: " << (int)device_index << std::endl;
+                    std::cout << rate << " samples/sec" << std::endl;
                     print = true;
                 }
                 learner->step(learn_buffers, print);
+
+                rate = metric.update_and_get_rate(learner->batch_size);
             }
             ++step;
+
+            if (rate > learners.size() * actor_sample_rate * Options::max_learn_actor_ratio)
+            {
+                using namespace std::chrono_literals;
+                std::this_thread::sleep_for(1000ms);
+            }
         }
+    }
+
+    static W::Types::State battle_generator(SimpleTypes::Seed seed)
+    {
+        SimpleTypes::PRNG device{seed};
+        return W::make_state<BattleTypes>(device.random_int(n_sides), device.random_int(n_sides));
     }
 
     void eval()
     {
+        const size_t n_threads = 6;
+        const size_t n_iter = 1 << 7;
+
         while (!run_eval)
         {
             run_eval = false;
@@ -490,24 +515,39 @@ struct TrainingAndEval
         run_actor = false;
         run_learn = false;
 
-        std::vector<W::Types::Model> agents{};
+        std::cout << "STARTING EVAL" << std::endl;
+
+        // monte carlo search model as a control
+        using MCMTypes = TreeBanditSearchModel<TreeBandit<Exp3<MonteCarloModel<BattleTypes>>>>;
+        std::vector<W::Types::Model> agents{
+            W::make_model<MCMTypes>(MCMTypes::Model{1 << 8, {}, {0}, {}}),
+            W::make_model<MCMTypes>(MCMTypes::Model{1 << 10, {}, {0}, {}}),
+            W::make_model<MCMTypes>(MCMTypes::Model{1 << 12, {}, {0}, {}}),
+            W::make_model<MCMTypes>(MCMTypes::Model{1 << 14, {}, {0}, {}})};
+
+        // add the CPU versions of the learner nets
         for (const Learner learner : learners)
         {
             agents.emplace_back(learner->make_w_model());
         }
+
         using T = TreeBanditThreaded<Exp3Single<MonteCarloModel<Arena>>>;
         T::PRNG arena_device{};
         T::State arena_state{&battle_generator, agents};
         T::Model arena_model{0};
-        T::Search arena_search{};
+        T::Search arena_search{{.01}, n_threads};
         T::MatrixNode root{};
-        arena_search.run_for_iterations(1 << 10, arena_device, arena_state, arena_model, root);
-    }
 
-    static W::Types::State battle_generator(SimpleTypes::Seed seed)
-    {
-        SimpleTypes::PRNG device{seed};
-        return W::make_state<BattleTypes>(device.random_int(n_sides), device.random_int(n_sides));
+        T::ModelOutput output{};
+        T::State arena_state_{arena_state};
+        arena_state_.randomize_transition(arena_device);
+        arena_search.run_iteration(arena_device, arena_state_, arena_model, &root, output);
+        arena_search.run_for_iterations(n_iter, arena_device, arena_state, arena_model, root);
+
+        std::cout << "CUMULATIVE VALUES:" << std::endl;
+        root.stats.cum_values.print();
+        std::cout << "VISITS:" << std::endl;
+        root.stats.joint_visits.print();
     }
 
     // simply start all threads. each function handles its own start/stop
@@ -544,23 +584,27 @@ int main()
 {
     auto l0 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
         FCResNet{}, char{0}, // Net, CUDA device index
-        1024);          // optional hyperparams e.g. batch size etc.
+        1024);               // optional hyperparams e.g. batch size etc.
     auto l1 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
         FCResNet{}, char{0},
-        512);
+        1024);
     auto l2 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        FCResNet{}, char{0},
+        1024);
+    auto k0 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
         FCResNet{}, char{1},
         1024);
 
-    std::vector<Learner> learners = {l0, l1, l2};
+    // in my benchmarking, my 2nd GPU is 3x slower. Thus the first GPU has 3 times as many nets to train
+    std::vector<Learner> learners = {l0, l1, l2, k0};
 
     const size_t sample_buffer_size = 1 << 10;
     TrainingAndEval workspace{learners, sample_buffer_size};
     dummy_data(workspace.sample_buffers, workspace.sample_buffer_size);
-    workspace.run_actor = false;
-    workspace.run_learn = false;
-    workspace.run_eval = true;
-    workspace.run();
+    workspace.run_actor = true;
+    workspace.run_learn = true;
+    workspace.run_eval = false;
+    const size_t n_actor_threads = 4;
+    workspace.run(n_actor_threads);
     return 0;
 }
-

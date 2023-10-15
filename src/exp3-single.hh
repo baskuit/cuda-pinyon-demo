@@ -22,6 +22,8 @@ struct Exp3Single : Types
     {
         typename Types::VectorReal gains;
         typename Types::VectorInt visits;
+        typename Types::MatrixReal joint_visits;
+        typename Types::template Matrix<PairReal<Real>> cum_values;
 
         int n = 0;
         PairReal<Real> value_total{0, 0};
@@ -108,6 +110,8 @@ struct Exp3Single : Types
         {
             stats.visits.resize(rows, 0);
             stats.gains.resize(rows, 0);
+            stats.joint_visits.fill(rows, rows);
+            stats.cum_values.fill(rows, rows);
         }
 
         // multithreaded
@@ -166,6 +170,18 @@ struct Exp3Single : Types
                 {
                     v -= max;
                 }
+            }
+
+            const int a = std::min(outcome.row_idx, outcome.col_idx);
+            const int b = std::max(outcome.row_idx, outcome.col_idx);
+            stats.joint_visits.get(a, b) += 1;
+            if (outcome.row_idx < outcome.col_idx)
+            {
+                stats.cum_values.get(a, b) += outcome.value;
+            }
+            else
+            {
+                stats.cum_values.get(a, b) += typename Types::Value{outcome.value.get_col_value(), outcome.value.get_row_value()};
             }
             mutex.unlock();
         }
