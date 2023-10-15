@@ -19,7 +19,7 @@ namespace Options
     const size_t eval_iterations = 1 << 5;
     const float full_search_prob = .25;
     const int berth = 1 << 8;
-    const size_t max_devices = 4;
+    const size_t max_devices = 4; // only used as size for std::thread[]
     const int metric_history_size = 100;
     const float value_q_weight = .5;
 };
@@ -510,7 +510,6 @@ struct TrainingAndEval
 
         while (!run_eval)
         {
-            run_eval = false;
             sleep(1);
         }
 
@@ -520,12 +519,11 @@ struct TrainingAndEval
         std::cout << "STARTING EVAL" << std::endl;
 
         // monte carlo search model as a control
-        using MCMTypes = TreeBanditSearchModel<TreeBandit<Exp3<MonteCarloModel<BattleTypes>>>>;
-        std::vector<W::Types::Model> agents{
-            W::make_model<MCMTypes>(MCMTypes::Model{1 << 8, {}, {0}, {}}),
-            W::make_model<MCMTypes>(MCMTypes::Model{1 << 10, {}, {0}, {}}),
-            W::make_model<MCMTypes>(MCMTypes::Model{1 << 12, {}, {0}, {}}),
-            W::make_model<MCMTypes>(MCMTypes::Model{1 << 14, {}, {0}, {}})};
+        using _MCTSTypes = TreeBanditSearchModel<TreeBandit<Exp3<MonteCarloModel<BattleTypes>>>>;
+        std::vector<W::Types::Model> agents{                  //iter, device, model, search
+            W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 8, {}, {0}, {}}),
+            W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 10, {}, {0}, {}}),
+            W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 12, {}, {0}, {}})};
 
         // add the CPU versions of the learner nets
         for (const Learner learner : learners)
@@ -533,17 +531,17 @@ struct TrainingAndEval
             agents.emplace_back(learner->make_w_model());
         }
 
-        using T = TreeBanditThreaded<Exp3Single<MonteCarloModel<Arena>>>;
-        T::PRNG arena_device{};
-        T::State arena_state{&battle_generator, agents};
-        T::Model arena_model{0};
-        T::Search arena_search{{.01}, n_threads};
-        T::MatrixNode root{};
-
-        T::ModelOutput output{};
-        T::State arena_state_{arena_state};
+        // Exp3single is for arena, i.e. symmetric one shot games
+        using A = TreeBanditThreaded<Exp3Single<MonteCarloModel<Arena>>>;
+        A::PRNG arena_device{};
+        A::State arena_state{&battle_generator, agents};
+        A::Model arena_model{0};
+        A::Search arena_search{{.01}, n_threads};
+        A::MatrixNode root{};
 
         // init on single thread, kinda jank, remove?
+        A::ModelOutput output{};
+        A::State arena_state_{arena_state};
         arena_state_.randomize_transition(arena_device);
         arena_search.run_iteration(arena_device, arena_state_, arena_model, &root, output);
 
