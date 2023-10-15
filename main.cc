@@ -505,6 +505,8 @@ struct TrainingAndEval
     {
         const size_t n_threads = 6;
         const size_t n_iter = 1 << 7;
+        const size_t n_prints = 1 << 3;
+        const size_t n_iter_per_print = n_iter / n_prints;
 
         while (!run_eval)
         {
@@ -540,14 +542,20 @@ struct TrainingAndEval
 
         T::ModelOutput output{};
         T::State arena_state_{arena_state};
+
+        // init on single thread, kinda jank, remove?
         arena_state_.randomize_transition(arena_device);
         arena_search.run_iteration(arena_device, arena_state_, arena_model, &root, output);
-        arena_search.run_for_iterations(n_iter, arena_device, arena_state, arena_model, root);
 
-        std::cout << "CUMULATIVE VALUES:" << std::endl;
-        root.stats.cum_values.print();
-        std::cout << "VISITS:" << std::endl;
-        root.stats.joint_visits.print();
+        for (size_t print = 0; print < n_prints; ++print)
+        {
+            arena_search.run_for_iterations(n_iter_per_print, arena_device, arena_state, arena_model, root);
+            std::cout << "EVAL UPDATE " << print << "/" << n_prints << std::endl;
+            std::cout << "CUMULATIVE VALUES:" << std::endl;
+            root.stats.cum_values.print();
+            std::cout << "VISITS:" << std::endl;
+            root.stats.joint_visits.print();
+        }
     }
 
     // simply start all threads. each function handles its own start/stop

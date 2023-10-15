@@ -64,26 +64,6 @@ struct PinnedBuffers : LearnerBuffers
     PinnedBuffers &operator=(const PinnedBuffers &) = delete;
 };
 
-struct DeviceBuffers : LearnerBuffers
-{
-    // add torch or cuda device
-
-    DeviceBuffers() {}
-
-    DeviceBuffers(const int size, const char device_index = 0)
-    {
-        alloc_device_buffers(*this, size);
-    }
-
-    ~DeviceBuffers()
-    {
-        dealloc_buffers(*this);
-    }
-
-    DeviceBuffers(const DeviceBuffers &) = delete;
-    DeviceBuffers &operator=(const DeviceBuffers &) = delete;
-};
-
 struct PinnedActorBuffers : ActorBuffers
 {
     PinnedActorBuffers() {}
