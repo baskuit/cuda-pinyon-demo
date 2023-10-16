@@ -10,20 +10,20 @@ namespace Options
 {
     const int batch_size = 1 << 10;
     const float policy_loss_weight = 0.5;
-    const float base_learning_rate = .0001;
-    const float log_learning_rate_decay = std::log(10) / -10;
+    const float base_learning_rate = .001;
+    const float total_learning_rate_decay = -std::log(10);
     const float max_learn_actor_ratio = 150;
     const size_t full_iterations = 1 << 10;
     const size_t partial_iterations = 1 << 8;
-    const size_t eval_iterations = 1 << 5;
+    const size_t eval_iterations = 1 << 10;
     const float full_search_prob = .25;
     const int berth = 1 << 8;
     const size_t max_devices = 4; // only used as size for std::thread[]
-    const int metric_history_size = 100;
+    const int metric_history_size = 400;
     const float value_q_weight = .5;
 
-    const size_t total_samples = 1 << (10 + 7);
-    const size_t n_checkpoints = 2;
+    const size_t total_samples = 1 << 27;
+    const size_t n_checkpoints = 8;
     const size_t n_samples_per_checkpoint = total_samples / n_checkpoints;
 };
 
@@ -127,7 +127,8 @@ struct LearnerData
     const int batch_size;
     const float policy_loss_weight;
     const float base_learning_rate;
-    const float log_learning_rate_decay;
+    const float total_learning_rate_decay;
+    const float value_q_weight;
 
     const torch::Device device{cuda_device_index == -1 ? torch::kCPU : torch::Device{torch::kCUDA, cuda_device_index}};
     torch::nn::MSELoss mse{};
@@ -143,18 +144,21 @@ struct LearnerData
         const char cuda_device_index = 0,
         const int batch_size = Options::batch_size,
         const float base_learning_rate = Options::base_learning_rate,
-        const float log_learning_rate_decay = Options::log_learning_rate_decay,
-        const float policy_loss_weight = Options::policy_loss_weight)
+        const float total_learning_rate_decay = Options::total_learning_rate_decay,
+        const float policy_loss_weight = Options::policy_loss_weight,
+        const float value_q_weight = Options::value_q_weight)
         : cuda_device_index{cuda_device_index},
           batch_size{batch_size},
           policy_loss_weight{policy_loss_weight},
           base_learning_rate{base_learning_rate},
-          log_learning_rate_decay{log_learning_rate_decay}
+          total_learning_rate_decay{total_learning_rate_decay},
+          value_q_weight{value_q_weight}
     {
     }
 
     virtual W::Types::Model make_w_model() const = 0;
     virtual void step(LearnerBuffers, bool) = 0;
+    virtual void set_lr(const float lr) = 0;
 };
 
 template <typename Net, typename Optimizer>
@@ -186,8 +190,27 @@ struct LearnerImpl : LearnerData
     {
         // defines type list where `Model` is the output of exp3 search with the CPU net as the model
         using SearchModelTypes = TreeBanditSearchModel<TreeBandit<Exp3<CPUModel<Net>>>>;
-        return W::make_model<SearchModelTypes>( //                          CPUNet params
-            typename SearchModelTypes::Model{Options::eval_iterations, {}, {net}, {.01}});
+        return W::make_model<SearchModelTypes>(
+            typename SearchModelTypes::Model{
+                Options::eval_iterations,
+                {},
+                {net},
+                {.01}});
+    }
+
+    void set_lr(const float lr)
+    {
+        for (auto &group : optimizer.param_groups())
+        {
+            for (auto &param : group.params())
+            {
+                if (!param.grad().defined())
+                    continue;
+
+                auto &options = group.options();
+                options.set_lr(lr);
+            }
+        }
     }
 
     void step(
@@ -527,6 +550,13 @@ struct TrainingAndEval
                     std::cout << "learner: " << learner.get() << "; device index: " << (int)device_index << std::endl;
                     std::cout << device_rate << " samples/sec (device)" << std::endl;
                     print = true;
+
+                    // also update learning rate
+                    const float done = learner->n_samples / (float)learner->max_samples;
+                    const float new_learning_rate = learner->base_learning_rate * std::pow(learner->total_learning_rate_decay, done);
+                    std::cout << "update lr from " << learner->learning_rate << " to " << new_learning_rate << std::endl;
+                    learner->learning_rate = new_learning_rate;
+                    learner->set_lr(new_learning_rate);
                 }
                 // increments learner->n_samples
                 learner->step(learn_buffers, print);
@@ -556,8 +586,8 @@ struct TrainingAndEval
     void eval()
     {
         const size_t n_threads = 6;
-        const size_t n_iter = 1 << 7;
-        const size_t n_prints = 1 << 3;
+        const size_t n_iter = 1 << 8;
+        const size_t n_prints = 1 << 4;
         const size_t n_iter_per_print = n_iter / n_prints;
 
         while (!run_eval)
@@ -580,8 +610,8 @@ struct TrainingAndEval
 
         std::vector<W::Types::Model>
             agents{// iter, device, model, search
-                   //    W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 8, {}, {0}, {}}),
-                   W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 10, {}, {0}, {}})};
+                   W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 10, {}, {0}, {}}),
+                   W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 12, {}, {0}, {}})};
         //    W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 12, {}, {0}, {}})};
 
         // add the CPU versions of the learner nets
@@ -607,7 +637,7 @@ struct TrainingAndEval
         for (size_t print = 0; print < n_prints; ++print)
         {
             arena_search.run_for_iterations(n_iter_per_print, arena_device, arena_state, arena_model, root);
-            std::cout << "EVAL UPDATE " << print << "/" << n_prints << std::endl;
+            std::cout << "EVAL UPDATE " << print + 1 << "/" << n_prints << std::endl;
             std::cout << "CUMULATIVE VALUES:" << std::endl;
             root.stats.cum_values.print();
             std::cout << "VISITS:" << std::endl;
@@ -627,14 +657,14 @@ struct TrainingAndEval
         {
             actor_threads[i] = std::thread(&TrainingAndEval::actor, this);
         }
-        // for (size_t i = 0; i < n_devices; ++i)
-        // {
-        //     learn_threads[i] = std::thread(&TrainingAndEval::learn, this, device_indices[i]);
-        // }
-        // for (size_t i = 0; i < n_devices; ++i)
-        // {
-        //     learn_threads[i].join();
-        // }
+        for (size_t i = 0; i < n_devices; ++i)
+        {
+            learn_threads[i] = std::thread(&TrainingAndEval::learn, this, device_indices[i]);
+        }
+        for (size_t i = 0; i < n_devices; ++i)
+        {
+            learn_threads[i].join();
+        }
         run_actor = false;
         run_learn = false;
         run_eval = true;
@@ -650,33 +680,43 @@ struct TrainingAndEval
 
 int main()
 {
+
     auto l0 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-        FCResNet{}, char{0}, // Net, CUDA device index
-        1024);               // optional hyperparams e.g. batch size etc.
+        FCResNet{1 << 7, 1 << 5, 2}, char{0},
+        1 << 10, .01, Options::total_learning_rate_decay, 1.0f, .5f);
     auto l1 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-        FCResNet{}, char{0},
-        1024);
+        FCResNet{1 << 8, 1 << 6, 4}, char{0},
+        1 << 11, .005, Options::total_learning_rate_decay, 1.0f, .5f);
     auto l2 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-        FCResNet{}, char{0},
-        1024);
+        FCResNet{1 << 7, 1 << 5, 6}, char{0},
+        1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .5f);
+    auto l3 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        FCResNet{1 << 8, 1 << 6, 8}, char{0},
+        1 << 10, .01, Options::total_learning_rate_decay, 1.0f, .5f);
+    auto l4 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        FCResNet{1 << 7, 1 << 5, 2}, char{0},
+        1 << 11, .005, Options::total_learning_rate_decay, 1.0f, .5f);
+    auto l5 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        FCResNet{1 << 8, 1 << 6, 4}, char{0},
+        1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .5f);
     auto k0 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-        FCResNet{}, char{1},
-        1024);
+        FCResNet{1 << 7, 1 << 5, 6}, char{1},
+        1 << 10, .005, Options::total_learning_rate_decay, 1.0f, .75f);
+    auto k1 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        FCResNet{1 << 8, 1 << 6, 8}, char{1},
+        1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .75f);
 
     // in my benchmarking, my 2nd GPU is 3x slower. Thus the first GPU has 3 times as many nets to train
-    std::vector<Learner> learners = {l0, l1, l2, k0};
+    std::vector<Learner> learners = {l0, l1, l2, l3, l4, l5, k0, k1};
 
-    const size_t sample_buffer_size = 1 << 10;
+    const size_t sample_buffer_size = 1 << 16;
     TrainingAndEval workspace{learners, sample_buffer_size};
-    dummy_data(workspace.sample_buffers, workspace.sample_buffer_size);
-    // workspace.run_actor = true;
-    // workspace.run_learn = true;
-    // workspace.run_eval = false;
-    workspace.run_actor = false;
+    // dummy_data(workspace.sample_buffers, workspace.sample_buffer_size);
+    workspace.run_actor = true;
     workspace.run_learn = false;
-    workspace.run_eval = true;
+    workspace.run_eval = false;
 
-    const size_t n_actor_threads = 4;
+    const size_t n_actor_threads = 6;
     workspace.run(n_actor_threads);
     return 0;
 }

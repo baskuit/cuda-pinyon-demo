@@ -5,7 +5,7 @@
 template <typename A>
 void copy_state_dict(A &target_model, const A &source_model)
 {
-    torch::autograd::GradMode::set_enabled(false);     // make parameters copying possible
+    torch::autograd::GradMode::set_enabled(false);      // make parameters copying possible
     auto new_params = target_model->named_parameters(); // implement this
     auto params = source_model->named_parameters(true /*recurse*/);
     auto buffers = source_model->named_buffers(true /*recurse*/);
@@ -16,14 +16,14 @@ void copy_state_dict(A &target_model, const A &source_model)
         if (t != nullptr)
         {
             t->copy_(val.value());
-            std::cout << name << std::endl;
+            // std::cout << name << std::endl;
         }
         else
         {
             t = buffers.find(name);
             if (t != nullptr)
             {
-                std::cout << name << std::endl;
+                // std::cout << name << std::endl;
                 t->copy_(val.value());
             }
         }
@@ -53,6 +53,7 @@ namespace Options
     const int input_size = 376;
     const int outer_size = 1 << 5;
     const int n_res_blocks = 4;
+    const float dropout_rate = .5;
 };
 
 /*
@@ -66,17 +67,23 @@ class ResBlockImpl : public torch::nn::Module
 public:
     torch::nn::Linear fc1{nullptr};
     torch::nn::Linear fc2{nullptr};
+    torch::nn::Dropout dropout1{nullptr};
+    torch::nn::Dropout dropout2{nullptr};
 
-    ResBlockImpl()
+    ResBlockImpl(
+        const int hidden_size = Options::hidden_size,
+        const double dropout_rate = Options::dropout_rate)
     {
-        fc1 = register_module("fc1", torch::nn::Linear(Options::hidden_size, Options::hidden_size));
-        fc2 = register_module("fc2", torch::nn::Linear(Options::hidden_size, Options::hidden_size));
+        fc1 = register_module("fc1", torch::nn::Linear(hidden_size, hidden_size));
+        fc2 = register_module("fc2", torch::nn::Linear(hidden_size, hidden_size));
+        dropout1 = register_module("dropout1", torch::nn::Dropout(dropout_rate));
+        dropout2 = register_module("dropout2", torch::nn::Dropout(dropout_rate));
     }
 
     torch::Tensor forward(torch::Tensor input)
     {
         torch::Tensor residual = input.clone();
-        input = torch::relu(fc2(torch::relu(fc1(input)))) + residual;
+        input = torch::relu(dropout2(fc2(torch::relu(dropout1(fc1(input)))))) + residual;
         return input;
     }
 };
@@ -93,7 +100,6 @@ class FCResNetImpl : public torch::nn::Module
 public:
     torch::nn::Linear fc{nullptr};
     torch::nn::Sequential tower{nullptr};
-    // ResBlock block{nullptr};
     torch::nn::Linear fc_value_pre{nullptr};
     torch::nn::Linear fc_value{nullptr};
     torch::nn::Linear fc_row_logits_pre{nullptr};
@@ -101,24 +107,29 @@ public:
     torch::nn::Linear fc_col_logits_pre{nullptr};
     torch::nn::Linear fc_col_logits{nullptr};
 
-    FCResNetImpl()
-    {
-        fc = register_module("fc_input", torch::nn::Linear(Options::input_size, Options::hidden_size));
-        tower = register_module("tower", torch::nn::Sequential(
-            // ResBlock(), ResBlock(), ResBlock(), ResBlock()
-        ));
-        for (int i = 0; i < Options::n_res_blocks; ++i)
-        {
-            tower->push_back(register_module("b" + std::to_string(i), ResBlock()));
-        }
-        // block = register_module("block", ResBlock());
+    const int hidden_size;
+    const int outer_size;
+    const int n_res_blocks;
 
-        fc_value_pre = register_module("fc_value_pre", torch::nn::Linear(Options::hidden_size, Options::outer_size));
-        fc_value = register_module("fc_value", torch::nn::Linear(Options::outer_size, 1));
-        fc_row_logits_pre = register_module("fc_row_logits_pre", torch::nn::Linear(Options::hidden_size, Options::outer_size));
-        fc_row_logits = register_module("fc_row_logits", torch::nn::Linear(Options::outer_size, policy_size - 1));
-        fc_col_logits_pre = register_module("fc_col_logits_pre", torch::nn::Linear(Options::hidden_size, Options::outer_size));
-        fc_col_logits = register_module("fc_col_logits", torch::nn::Linear(Options::outer_size, policy_size - 1));
+    FCResNetImpl(
+        const int hidden_size = Options::hidden_size,
+        const int outer_size = Options::outer_size,
+        const int n_res_blocks = Options::n_res_blocks)
+        : hidden_size{hidden_size}, outer_size{outer_size}, n_res_blocks{n_res_blocks}
+    {
+        fc = register_module("fc_input", torch::nn::Linear(Options::input_size, hidden_size));
+        tower = register_module("tower", torch::nn::Sequential());
+        for (int i = 0; i < n_res_blocks; ++i)
+        {
+            tower->push_back(register_module("b" + std::to_string(i), ResBlock(hidden_size)));
+        }
+
+        fc_value_pre = register_module("fc_value_pre", torch::nn::Linear(hidden_size, outer_size));
+        fc_value = register_module("fc_value", torch::nn::Linear(outer_size, 1));
+        fc_row_logits_pre = register_module("fc_row_logits_pre", torch::nn::Linear(hidden_size, outer_size));
+        fc_row_logits = register_module("fc_row_logits", torch::nn::Linear(outer_size, policy_size - 1));
+        fc_col_logits_pre = register_module("fc_col_logits_pre", torch::nn::Linear(hidden_size, outer_size));
+        fc_col_logits = register_module("fc_col_logits", torch::nn::Linear(outer_size, policy_size - 1));
     }
 
     NetOutput forward(torch::Tensor input, torch::Tensor joined_policy_indices)

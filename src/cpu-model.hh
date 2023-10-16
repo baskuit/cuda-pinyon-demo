@@ -28,11 +28,17 @@ struct CPUModel : BattleTypes
         }
 
         Model(const Net &other)
+        : net{other->hidden_size, other->outer_size, other->n_res_blocks}
         {
             copy_state_dict(net, other);
             net->to(torch::kCPU);
             net->eval();
         }
+
+        // template <typename ...Args>
+        // Model (const Args& ...args) : net{args} {
+
+        // }
 
         void inference(
             BattleTypes::State &&state,
