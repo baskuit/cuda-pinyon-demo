@@ -11,7 +11,7 @@ namespace Options
     const int batch_size = 1 << 10;
     const float policy_loss_weight = 0.5;
     const float base_learning_rate = .001;
-    const float total_learning_rate_decay = -std::log(10);
+    const float total_learning_rate_decay = .1;
     const float max_learn_actor_ratio = 150;
     const size_t full_iterations = 1 << 10;
     const size_t partial_iterations = 1 << 8;
@@ -184,6 +184,7 @@ struct LearnerImpl : LearnerData
         {
             this->net->to(this->device);
         }
+        this->net->train();
     }
 
     W::Types::Model make_w_model() const
@@ -555,6 +556,7 @@ struct TrainingAndEval
                     const float done = learner->n_samples / (float)learner->max_samples;
                     const float new_learning_rate = learner->base_learning_rate * std::pow(learner->total_learning_rate_decay, done);
                     std::cout << "update lr from " << learner->learning_rate << " to " << new_learning_rate << std::endl;
+                    std::cout << done * 100 << "% done" << std::endl;
                     learner->learning_rate = new_learning_rate;
                     learner->set_lr(new_learning_rate);
                 }
