@@ -29,17 +29,7 @@ struct CPUModel : BattleTypes
 
         Model(const Net &other)
         {
-            // for (auto &targetParam : net->parameters())
-            // {
-            //     for (const auto &sourceParam : other->parameters())
-            //     {
-            //         if (targetParam.name() == sourceParam.name())
-            //         {
-            //             targetParam.data() = sourceParam.data().clone();
-            //             break;
-            //         }
-            //     }
-            // }
+            copy_state_dict(net, other);
             net->to(torch::kCPU);
             net->eval();
         }

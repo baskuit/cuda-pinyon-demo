@@ -258,7 +258,8 @@ struct LearnerImpl : LearnerData
         n_samples += batch_size;
         const size_t new_checkpoint = n_samples / Options::n_samples_per_checkpoint;
 
-        if (old_checkpoint != new_checkpoint) {
+        if (old_checkpoint != new_checkpoint)
+        {
             std::cout << "CHECKPOINT " << new_checkpoint << " REACHED" << std::endl;
         }
     }
@@ -571,10 +572,17 @@ struct TrainingAndEval
 
         // monte carlo search model as a control
         using _MCTSTypes = TreeBanditSearchModel<TreeBandit<Exp3<MonteCarloModel<BattleTypes>>>>;
-        std::vector<W::Types::Model> agents{// iter, device, model, search
-                                            W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 8, {}, {0}, {}}),
-                                            W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 10, {}, {0}, {}}),
-                                            W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 12, {}, {0}, {}})};
+
+        for (const Learner &learner : learners)
+        {
+            // get best agent for all w/e
+        }
+
+        std::vector<W::Types::Model>
+            agents{// iter, device, model, search
+                   //    W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 8, {}, {0}, {}}),
+                   W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 10, {}, {0}, {}})};
+        //    W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 12, {}, {0}, {}})};
 
         // add the CPU versions of the learner nets
         for (const Learner learner : learners)
@@ -619,20 +627,23 @@ struct TrainingAndEval
         {
             actor_threads[i] = std::thread(&TrainingAndEval::actor, this);
         }
-        for (size_t i = 0; i < n_devices; ++i)
-        {
-            learn_threads[i] = std::thread(&TrainingAndEval::learn, this, device_indices[i]);
-        }
-        std::thread eval_thread{&TrainingAndEval::eval, this};
-
+        // for (size_t i = 0; i < n_devices; ++i)
+        // {
+        //     learn_threads[i] = std::thread(&TrainingAndEval::learn, this, device_indices[i]);
+        // }
+        // for (size_t i = 0; i < n_devices; ++i)
+        // {
+        //     learn_threads[i].join();
+        // }
+        run_actor = false;
+        run_learn = false;
+        run_eval = true;
         for (size_t i = 0; i < n_actor_threads; ++i)
         {
             actor_threads[i].join();
         }
-        for (size_t i = 0; i < n_devices; ++i)
-        {
-            learn_threads[i].join();
-        }
+
+        std::thread eval_thread{&TrainingAndEval::eval, this};
         eval_thread.join();
     }
 };
@@ -658,9 +669,13 @@ int main()
     const size_t sample_buffer_size = 1 << 10;
     TrainingAndEval workspace{learners, sample_buffer_size};
     dummy_data(workspace.sample_buffers, workspace.sample_buffer_size);
-    workspace.run_actor = true;
-    workspace.run_learn = true;
-    workspace.run_eval = false;
+    // workspace.run_actor = true;
+    // workspace.run_learn = true;
+    // workspace.run_eval = false;
+    workspace.run_actor = false;
+    workspace.run_learn = false;
+    workspace.run_eval = true;
+
     const size_t n_actor_threads = 4;
     workspace.run(n_actor_threads);
     return 0;
