@@ -11,7 +11,6 @@ namespace Options
     const int batch_size = 1 << 10;
     const float policy_loss_weight = 0.5;
     const float base_learning_rate = .0001;
-    const int samples_per_checkpoint = 1 << 20;
     const float log_learning_rate_decay = std::log(10) / -10;
     const float max_learn_actor_ratio = 150;
     const size_t full_iterations = 1 << 10;
@@ -22,6 +21,10 @@ namespace Options
     const size_t max_devices = 4; // only used as size for std::thread[]
     const int metric_history_size = 100;
     const float value_q_weight = .5;
+
+    const size_t total_samples = 1 << (10 + 7);
+    const size_t n_checkpoints = 2;
+    const size_t n_samples_per_checkpoint = total_samples / n_checkpoints;
 };
 
 #include "./src/nn.hh"
@@ -81,6 +84,7 @@ struct Metric
     std::queue<int> donation_sizes;
     std::queue<decltype(std::chrono::high_resolution_clock::now())> donation_times;
     int total_donations = 0;
+    float last_rate = 0;
 
     Metric(const int max_donations) : max_donations{max_donations} {}
 
@@ -107,9 +111,9 @@ struct Metric
             mtx.unlock();
             return 0;
         }
-        const float answer = 1000 * (total_donations - donation_sizes.front()) / duration;
+        last_rate = 1000 * (total_donations - donation_sizes.front()) / duration;
         mtx.unlock();
-        return answer;
+        return last_rate;
     }
 };
 
@@ -130,6 +134,8 @@ struct LearnerData
     torch::nn::CrossEntropyLoss cel{};
     std::vector<std::string> saves{};
     Metric metric{Options::metric_history_size};
+    const size_t max_samples = Options::total_samples;
+    const size_t n_steps_to_completion = max_samples / batch_size;
     size_t n_samples = 0;
     float learning_rate = base_learning_rate;
 
@@ -188,8 +194,6 @@ struct LearnerImpl : LearnerData
         LearnerBuffers learn_buffers,
         bool print = false) override
     {
-        this->n_samples += this->batch_size;
-
         torch::Tensor float_input =
             torch::from_blob(
                 learn_buffers.float_input_buffer,
@@ -249,6 +253,14 @@ struct LearnerImpl : LearnerData
         loss.backward();
         optimizer.step();
         optimizer.zero_grad();
+
+        const size_t old_checkpoint = n_samples / Options::n_samples_per_checkpoint;
+        n_samples += batch_size;
+        const size_t new_checkpoint = n_samples / Options::n_samples_per_checkpoint;
+
+        if (old_checkpoint != new_checkpoint) {
+            std::cout << "CHECKPOINT " << new_checkpoint << " REACHED" << std::endl;
+        }
     }
 };
 
@@ -449,25 +461,56 @@ struct TrainingAndEval
     void learn(const char device_index = 0)
     {
         switch_device(device_index);
-        // device-wide metric, remove?
-        Metric metric{Options::metric_history_size};
+        Metric device_metric{Options::metric_history_size};
 
         while (!run_learn)
         {
             sleep(1);
         }
 
-        std::cout << "start learn(), device: " << (int)device_index << std::endl;
+        std::cout << "START LEARN ON DEVICE: " << (int)device_index << std::endl;
         size_t step = 0;
-        float rate = 0;
+        float device_rate = 0;
+
         while (run_learn)
         {
             LearnerBuffers learn_buffers = raw_learn_buffers[device_index];
-            // shadows member...
-            std::vector<Learner> &learners = learner_device_groupings[device_index];
+            std::vector<Learner> &device_learners = learner_device_groupings[device_index];
 
-            for (const Learner &learner : learners)
+            // erases from learner_device_groupings but not this->learners, so its not really deleted
+            int learner_index = 0;
+            auto n_finished = std::erase_if(
+                device_learners,
+                [&learner_index, &device_index](const Learner &learner)
+                {
+                    const bool finished = learner->n_samples >= learner->max_samples;
+                    if (finished)
+                    {
+                        std::cout << "LEARNER " << learner_index << " FINISHED ON DEVICE: " << (int)device_index << std::endl;
+                    }
+                    ++learner_index;
+                    return finished;
+                });
+
+            // check if terminate
+            const size_t n_learners = device_learners.size();
+            if (n_learners == 0)
             {
+                std::cout << "LEARNING ON DEVICE " << (int)device_index << " FININSHED" << std::endl;
+                break;
+            }
+
+            // now step with remaining learners
+            for (const Learner &learner : device_learners)
+            {
+
+                // larger batch sizes get skipped sometimes so smaller batch sizes can keep up
+                (void)learner->metric.update_and_get_rate(0);
+                if (learner->metric.last_rate * n_learners > device_rate)
+                {
+                    continue;
+                }
+
                 const int start = (sample_index.load() + berth) % sample_buffer_size;
                 copy_sample_to_learn_buffer(
                     learn_buffers,
@@ -481,21 +524,26 @@ struct TrainingAndEval
                 if (step % 1000 == 0)
                 {
                     std::cout << "learner: " << learner.get() << "; device index: " << (int)device_index << std::endl;
-                    std::cout << rate << " samples/sec" << std::endl;
+                    std::cout << device_rate << " samples/sec (device)" << std::endl;
                     print = true;
                 }
+                // increments learner->n_samples
                 learner->step(learn_buffers, print);
 
-                rate = metric.update_and_get_rate(learner->batch_size);
+                device_rate = device_metric.update_and_get_rate(learner->batch_size);
+                (void)learner->metric.update_and_get_rate(learner->batch_size);
             }
-            ++step;
 
-            if (rate > learners.size() * actor_sample_rate * Options::max_learn_actor_ratio)
+            device_rate = device_metric.update_and_get_rate(0);
+            if (device_rate > n_learners * actor_sample_rate * Options::max_learn_actor_ratio)
             {
                 using namespace std::chrono_literals;
-                std::this_thread::sleep_for(1000ms);
+                std::this_thread::sleep_for(50ms);
             }
+
+            ++step;
         }
+        std::cout << "LEARNER END, STEPS: " << step << std::endl;
     }
 
     static W::Types::State battle_generator(SimpleTypes::Seed seed)
@@ -523,10 +571,10 @@ struct TrainingAndEval
 
         // monte carlo search model as a control
         using _MCTSTypes = TreeBanditSearchModel<TreeBandit<Exp3<MonteCarloModel<BattleTypes>>>>;
-        std::vector<W::Types::Model> agents{                  //iter, device, model, search
-            W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 8, {}, {0}, {}}),
-            W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 10, {}, {0}, {}}),
-            W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 12, {}, {0}, {}})};
+        std::vector<W::Types::Model> agents{// iter, device, model, search
+                                            W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 8, {}, {0}, {}}),
+                                            W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 10, {}, {0}, {}}),
+                                            W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 12, {}, {0}, {}})};
 
         // add the CPU versions of the learner nets
         for (const Learner learner : learners)

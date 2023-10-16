@@ -50,7 +50,7 @@ struct Exp3Single : Types
 
         friend std::ostream &operator<<(std::ostream &os, const BanditAlgorithm &search)
         {
-            os << "Exp3; gamma: " << search.gamma;
+            os << "Exp3Single; gamma: " << search.gamma;
             return os;
         }
 
@@ -77,29 +77,6 @@ struct Exp3Single : Types
             {
                 value = typename Types::Value{stats.value_total * den};
             }
-        }
-
-        void get_refined_strategies(
-            const MatrixStats &stats,
-            Types::VectorReal &row_strategy,
-            Types::VectorReal &col_strategy) const
-        {
-            get_empirical_strategies(stats, row_strategy, col_strategy);
-        }
-
-        void get_refined_value(
-            const MatrixStats &stats,
-            Types::Value &value) const
-        {
-            get_empirical_value(stats, value);
-        }
-
-        void initialize_stats(
-            int iterations,
-            const Types::State &state,
-            Types::Model &model,
-            MatrixStats &stats) const
-        {
         }
 
         void expand(
@@ -211,30 +188,5 @@ struct Exp3Single : Types
                 forecast[i] /= sum;
             }
         };
-
-        inline void denoise(
-            Types::VectorReal &row_strategy,
-            Types::VectorReal &col_strategy) const
-        {
-            const size_t rows = row_strategy.size();
-            const size_t cols = col_strategy.size();
-            const auto &one_minus_gamma = this->one_minus_gamma;
-            if (rows > 1)
-            {
-                const Real eta{gamma / static_cast<Real>(rows)};
-                std::transform(
-                    row_strategy.begin(), row_strategy.begin() + rows, row_strategy.begin(),
-                    [eta, one_minus_gamma](Real value)
-                    { return (value - eta) / one_minus_gamma; });
-            }
-            if (cols > 1)
-            {
-                const Real eta{gamma / static_cast<Real>(cols)};
-                std::transform(
-                    col_strategy.begin(), col_strategy.begin() + cols, col_strategy.begin(),
-                    [eta, one_minus_gamma](Real value)
-                    { return (value - eta) / one_minus_gamma; });
-            }
-        }
     };
 };
