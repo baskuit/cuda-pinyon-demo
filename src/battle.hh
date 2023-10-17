@@ -3,6 +3,8 @@
 #include <pinyon.hh>
 #include <pkmn.h>
 
+#include "./string-data.hh"
+
 // global lambda for state processing
 
 auto get_index_from_action = [](const uint8_t *bytes, const uint8_t choice, const uint8_t col_offset = 0)
@@ -11,8 +13,8 @@ auto get_index_from_action = [](const uint8_t *bytes, const uint8_t choice, cons
     uint8_t data = choice >> 2;
     if (type == 1)
     {
-        uint8_t moveid = bytes[2 * (data - 1) + 10 + col_offset]; // 0 - 165
-        return int64_t{moveid};                                   // index=0 is dummy very negative logit
+        uint8_t moveid = bytes[2 * (data - 1) + 168 + col_offset]; // 0 - 165
+        return int64_t{moveid};                                    // index=0 is dummy very negative logit
     }
     else if (type == 2)
     {
@@ -54,9 +56,10 @@ struct BattleTypes : TypeList
         pkmn_gen1_battle battle;
         pkmn_gen1_log_options log_options;
         pkmn_gen1_battle_options options{};
-        pkmn_result result;
+        pkmn_result result{};
         pkmn_gen1_calc_options calc_options{}; // contains 24 byte override
         pkmn_gen1_chance_options chance_options{};
+        bool clamp = false;
 
         State(const int row_idx = 0, const int col_idx = 0)
         {
@@ -117,10 +120,13 @@ struct BattleTypes : TypeList
             TypeList::Action row_action,
             TypeList::Action col_action)
         {
-            // const uint8_t roll{255};
-            // memset(calc_options.overrides.bytes, roll, 8);
-            // memset(calc_options.overrides.bytes + 8, roll, 8);
-            // pkmn_gen1_battle_options_set(&options, &log_options, &chance_options, &calc_options);
+            static const uint8_t rolls[2] = {217, 255};
+            if (clamp)
+            {
+                calc_options.overrides.bytes[0] = rolls[battle.bytes[383] && 1];
+                calc_options.overrides.bytes[8] = rolls[battle.bytes[382] && 1];
+            }
+            pkmn_gen1_battle_options_set(&options, &log_options, &chance_options, &calc_options);
             result = pkmn_gen1_battle_update(&battle, row_action.get(), col_action.get(), &options);
             const pkmn_result_kind result_kind = pkmn_result_type(result);
             if (result_kind) [[unlikely]]
@@ -156,8 +162,7 @@ struct BattleTypes : TypeList
         void copy_to_buffer(
             Buffers buffers,
             const size_t buffer_index,
-            const int rows, const int cols
-            )
+            const int rows, const int cols)
         {
             memcpy(
                 &buffers.raw_input_buffer[buffer_index * 47],
@@ -202,6 +207,25 @@ struct BattleTypes : TypeList
             {
                 buffers.joined_policy_index_buffer[buffer_index * 18 + 9] = 1;
             }
+        }
+
+        void print() const
+        {
+            std::cout << "ACTIONS: " << std::endl;
+            for (const auto action : this->row_actions)
+            {
+                uint8_t data = action.get();
+                std::string s = id_strings[get_index_from_action(this->battle.bytes, data, 0)];
+                std::cout << s << ", ";
+            }
+            std::cout << std::endl;
+            for (const auto action : this->col_actions)
+            {
+                uint8_t data = action.get();
+                std::string s = id_strings[get_index_from_action(this->battle.bytes, data, 184)];
+                std::cout << s << ", ";
+            }
+            std::cout << std::endl;
         }
     };
 };

@@ -31,46 +31,8 @@ namespace Options
 #include "./src/battle.hh"
 #include "./src/cpu-model.hh"
 #include "./src/exp3-single.hh"
-#include "./src/search.hh"
-
-void dummy_data(
-    LearnerBuffers sample_buffers,
-    const size_t count)
-{
-    BattleTypes::VectorReal strategy{9};
-    strategy[0] = BattleTypes::Real{.5};
-    strategy[1] = BattleTypes::Real{.5};
-    std::vector<float> input{};
-    input.resize(376);
-    for (int b = 0; b < 376; ++b)
-    {
-        input[b] = static_cast<float>(b);
-    }
-    std::vector<int64_t> jpi{};
-    jpi.resize(18);
-    for (int b = 0; b < 18; ++b)
-    {
-        jpi[b] = b + 1;
-    }
-    for (size_t i = 0; i < count; ++i)
-    {
-        memcpy(&sample_buffers.float_input_buffer[376 * i], input.data(), 376 * sizeof(float));
-        sample_buffers.value_data_buffer[i * 2] = .314;
-        sample_buffers.value_data_buffer[i * 2 + 1] = .314;
-        memcpy(
-            &sample_buffers.joined_policy_index_buffer[i * 18],
-            jpi.data(),
-            18 * sizeof(int64_t));
-        memcpy(
-            &sample_buffers.joined_policy_buffer[i * 18],
-            reinterpret_cast<float *>(strategy.data()),
-            9 * 4);
-        memcpy(
-            &sample_buffers.joined_policy_buffer[i * 18 + 9],
-            reinterpret_cast<float *>(strategy.data()),
-            9 * 4);
-    }
-}
+#include "./src/exp3-with-policy.hh"
+#include "./src/arena.hh"
 
 // Pinyon type list for the entire program: Single threaded search on battles using Monte-Carlo eval.
 using Types = TreeBandit<Exp3<MonteCarloModel<BattleTypes>>, DefaultNodes>;
@@ -277,7 +239,6 @@ struct LearnerImpl : LearnerData
             pt(value_target.index({slice, "..."}));
             pt(row_policy_target.index({slice, "..."}));
             pt(col_policy_target.index({slice, "..."}));
-
         }
 
         torch::Tensor loss = value_loss + this->policy_loss_weight * (row_policy_loss + col_policy_loss);
@@ -400,7 +361,7 @@ struct TrainingAndEval
         const int sample_index_first = s % sample_buffer_size;
 
         actor_sample_rate = actor_metric.update_and_get_rate(count);
-        if (actor_sample_rate > 0)
+        if (actor_sample_rate > 0 && (s % 20 == 0))
         {
             std::cout << "actor rate: " << actor_sample_rate << " count: " << count << std::endl;
         }
@@ -515,17 +476,15 @@ struct TrainingAndEval
             std::vector<Learner> &device_learners = learner_device_groupings[device_index];
 
             // erases from learner_device_groupings but not this->learners, so its not really deleted
-            int learner_index = 0;
             auto n_finished = std::erase_if(
                 device_learners,
-                [&learner_index, &device_index](const Learner &learner)
+                [&device_index](const Learner &learner)
                 {
                     const bool finished = learner->n_samples >= learner->max_samples;
                     if (finished)
                     {
-                        std::cout << "LEARNER " << learner_index << " FINISHED ON DEVICE: " << (int)device_index << std::endl;
+                        std::cout << "LEARNER " << learner.get() << " FINISHED ON DEVICE: " << (int)device_index << std::endl;
                     }
-                    ++learner_index;
                     return finished;
                 });
 
@@ -588,75 +547,74 @@ struct TrainingAndEval
 
             ++step;
         }
-        std::cout << "LEARNER END, STEPS: " << step << std::endl;
     }
 
-    static W::Types::State battle_generator(SimpleTypes::Seed seed)
+    static Types::State battle_generator(SimpleTypes::Seed seed)
     {
         SimpleTypes::PRNG device{seed};
-        return W::make_state<BattleTypes>(device.random_int(n_sides), device.random_int(n_sides));
+        return Types::State(device.random_int(n_sides), device.random_int(n_sides));
     }
 
     void eval()
     {
-        const size_t n_threads = 4;
-        const size_t n_iter = 1 << 8;
-        const size_t n_prints = 1 << 4;
-        const size_t n_iter_per_print = n_iter / n_prints;
+        // const size_t n_threads = 4;
+        // const size_t n_iter = 1 << 8;
+        // const size_t n_prints = 1 << 4;
+        // const size_t n_iter_per_print = n_iter / n_prints;
 
-        while (!run_eval)
-        {
-            sleep(1);
-        }
+        // while (!run_eval)
+        // {
+        //     sleep(1);
+        // }
 
-        run_actor = false;
-        run_learn = false;
+        // run_actor = false;
+        // run_learn = false;
 
-        std::cout << "STARTING EVAL" << std::endl;
+        // std::cout << "STARTING EVAL" << std::endl;
 
-        // monte carlo search model as a control
-        using _MCTSTypes = TreeBanditSearchModel<TreeBandit<Exp3<MonteCarloModel<BattleTypes>>>>;
+        // // monte carlo search model as a control
+        // using _MCTSTypes = TreeBanditSearchModel<TreeBandit<Exp3<MonteCarloModel<BattleTypes>>>>;
 
-        for (const Learner &learner : learners)
-        {
-            // get best agent for all w/e
-        }
+        // for (const Learner &learner : learners)
+        // {
+        //     // get best agent for all w/e
+        // }
 
-        std::vector<W::Types::Model>
-            agents{// iter, device, model, search
-                   W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 10, {}, {0}, {}}),
-                   W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 12, {}, {0}, {}})};
-        //    W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 12, {}, {0}, {}})};
+        // std::vector<W::Types::Model>
+        //     agents{// iter, device, model, search
+        //            W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 10, {}, {0}, {}}),
+        //            W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 12, {}, {0}, {}})};
+        // //    W::make_model<_MCTSTypes>(_MCTSTypes::Model{1 << 12, {}, {0}, {}})};
 
-        // add the CPU versions of the learner nets
-        for (const Learner learner : learners)
-        {
-            agents.emplace_back(learner->make_w_model());
-        }
+        // // add the CPU versions of the learner nets
+        // for (const Learner learner : learners)
+        // {
+        //     agents.emplace_back(learner->make_w_model());
+        // }
 
-        // Exp3single is for arena, i.e. symmetric one shot games
-        using A = TreeBanditThreaded<Exp3Single<MonteCarloModel<Arena>>>;
-        A::PRNG arena_device{};
-        A::State arena_state{&battle_generator, agents};
-        A::Model arena_model{0};
-        A::Search arena_search{{.01}, n_threads};
-        A::MatrixNode root{};
+        // // Exp3single is for arena, i.e. symmetric one shot games
+        // using A = TreeBanditThreaded<Exp3Single<MonteCarloModel<Arena>>>;
+        // A::PRNG arena_device{};
+        // A::State arena_state{&battle_generator, agents};
+        // A::Model arena_model{0};
+        // A::Search arena_search{{.01}, n_threads};
+        // A::MatrixNode root{};
 
-        // init on single thread, kinda jank, remove?
-        A::ModelOutput output{};
-        A::State arena_state_{arena_state};
-        arena_state_.randomize_transition(arena_device);
-        arena_search.run_iteration(arena_device, arena_state_, arena_model, &root, output);
+        // // init on single thread, kinda jank, remove?
+        // A::ModelOutput output{};
+        // A::State arena_state_{arena_state};
+        // arena_state_.randomize_transition(arena_device);
+        // arena_search.run_iteration(arena_device, arena_state_, arena_model, &root, output);
 
-        for (size_t print = 0; print < n_prints; ++print)
-        {
-            arena_search.run_for_iterations(n_iter_per_print, arena_device, arena_state, arena_model, root);
-            std::cout << "EVAL UPDATE " << print + 1 << "/" << n_prints << std::endl;
-            std::cout << "CUMULATIVE VALUES:" << std::endl;
-            root.stats.cum_values.print();
-            std::cout << "VISITS:" << std::endl;
-            root.stats.joint_visits.print();
-        }
+        // for (size_t print = 0; print < n_prints; ++print)
+        // {
+        //     arena_search.run_for_iterations(n_iter_per_print, arena_device, arena_state, arena_model, root);
+        //     std::cout << "EVAL UPDATE " << print + 1 << "/" << n_prints << std::endl;
+        //     std::cout << "CUMULATIVE VALUES:" << std::endl;
+        //     root.stats.cum_values.print();
+        //     std::cout << "VISITS:" << std::endl;
+        //     root.stats.joint_visits.print();
+        // }
     }
 
     // simply start all threads. each function handles its own start/stop
@@ -695,57 +653,113 @@ struct TrainingAndEval
             std::ostringstream oss;
             oss << std::put_time(std::gmtime(&timestamp), "%Y%m%d%H%M%S") << "-" << l;
             std::string timestampStr = oss.str();
-            std::string filename = "./saved/model_" + timestampStr + ".pt";
+            std::string filename = "/home/user/Desktop/cuda-pinyon-demo/saved/model_" + timestampStr + ".pt";
             learner->save(filename);
             ++l;
         }
 
         std::thread eval_thread{&TrainingAndEval::eval, this};
         eval_thread.join();
-
-
     }
 };
+
+void save_eval_data(
+    const size_t n_samples,
+    const size_t n_iterations)
+{
+    // saves big ass tensor of input and targets, and instead of policy targets its the empirical matrix for expl calcing
+}
+
+void load_eval_data()
+{
+}
+
+void count_trasitions(
+    const BattleTypes::State &state,
+    const size_t tries = 1 << 10)
+{
+    BattleTypes::ObsHash hasher{};
+    BattleTypes::PRNG device{};
+    BattleTypes::MatrixInt counts{state.row_actions.size(), state.col_actions.size()};
+    for (size_t row_idx = 0; row_idx < state.row_actions.size(); ++row_idx)
+    {
+        BattleTypes::Action row_action = state.row_actions[row_idx];
+        for (size_t col_idx = 0; col_idx < state.col_actions.size(); ++col_idx)
+        {
+            BattleTypes::Action col_action = state.col_actions[col_idx];
+
+            std::unordered_map<uint64_t, size_t> table{};
+
+            for (size_t i = 0; i < tries; ++i)
+            {
+
+                BattleTypes::State state_ = state;
+                state_.randomize_transition(device);
+
+                state_.apply_actions(row_action, col_action);
+                uint64_t hash = hasher(state_.obs.get());
+                table[hash] += 1;
+            }
+            const size_t total_transitions = table.size();
+            counts.get(row_idx, col_idx) = total_transitions;
+        }
+    }
+    counts.print();
+}
 
 int main()
 {
 
-    auto l0 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-        FCResNet{1 << 7, 1 << 5, 2}, char{0},
-        1 << 10, .01, Options::total_learning_rate_decay, 1.0f, .5f);
-    auto l1 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-        FCResNet{1 << 8, 1 << 6, 4}, char{0},
-        1 << 11, .005, Options::total_learning_rate_decay, 1.0f, .5f);
-    auto l2 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-        FCResNet{1 << 7, 1 << 5, 6}, char{0},
-        1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .5f);
-    auto l3 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-        FCResNet{1 << 8, 1 << 6, 8}, char{0},
-        1 << 10, .01, Options::total_learning_rate_decay, 1.0f, .5f);
-    auto l4 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-        FCResNet{1 << 7, 1 << 5, 2}, char{0},
-        1 << 11, .005, Options::total_learning_rate_decay, 1.0f, .5f);
-    auto l5 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-        FCResNet{1 << 8, 1 << 6, 4}, char{0},
-        1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .5f);
-    auto k0 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-        FCResNet{1 << 7, 1 << 5, 6}, char{1},
-        1 << 10, .005, Options::total_learning_rate_decay, 1.0f, .75f);
-    auto k1 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-        FCResNet{1 << 8, 1 << 6, 8}, char{1},
-        1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .75f);
+    // BattleTypes::State state{0, 0};
+    // state.apply_actions(0, 0);
+    // state.get_actions();
+    // state.print();
 
-    // in my benchmarking, my 2nd GPU is 3x slower. Thus the first GPU has 3 times as many nets to train
-    std::vector<Learner> learners = {l0, l1, l2, l3, l4, l5, k0, k1};
+    // count_trasitions(state, 1 << 12);
 
-    const size_t sample_buffer_size = 1 << 14;
-    TrainingAndEval workspace{learners, sample_buffer_size};
-    // dummy_data(workspace.sample_buffers, workspace.sample_buffer_size);
-    workspace.run_actor = true;
-    workspace.run_learn = false;
-    workspace.run_eval = false;
+    NNArena::State state{&TrainingAndEval::battle_generator, {1 << 12, 1 << 12}, {}, 1};
+    ArenaS::MatrixNode root{};
+    foo(state, root, 8, 64);
 
-    const size_t n_actor_threads = 6;
-    workspace.run(n_actor_threads);
+    root.stats.cum_values.print();
+    root.stats.joint_visits.print();
+
+    // auto l0 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+    //     FCResNet{1 << 7, 1 << 5, 2}, char{0},
+    //     1 << 10, .01, Options::total_learning_rate_decay, 1.0f, .5f);
+    // auto l1 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+    //     FCResNet{1 << 8, 1 << 6, 4}, char{0},
+    //     1 << 11, .005, Options::total_learning_rate_decay, 1.0f, .5f);
+    // auto l2 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+    //     FCResNet{1 << 7, 1 << 5, 6}, char{0},
+    //     1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .5f);
+    // auto l3 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+    //     FCResNet{1 << 8, 1 << 6, 8}, char{0},
+    //     1 << 10, .01, Options::total_learning_rate_decay, 1.0f, .5f);
+    // auto l4 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+    //     FCResNet{1 << 7, 1 << 5, 2}, char{0},
+    //     1 << 11, .005, Options::total_learning_rate_decay, 1.0f, .5f);
+    // auto l5 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+    //     FCResNet{1 << 8, 1 << 6, 4}, char{0},
+    //     1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .5f);
+    // auto k0 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+    //     FCResNet{1 << 7, 1 << 5, 6}, char{1},
+    //     1 << 10, .005, Options::total_learning_rate_decay, 1.0f, .75f);
+    // auto k1 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+    //     FCResNet{1 << 8, 1 << 6, 8}, char{1},
+    //     1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .75f);
+
+    // // in my benchmarking, my 2nd GPU is 3x slower. Thus the first GPU has 3 times as many nets to train
+    // std::vector<Learner> learners = {l0, l1, l2, l3, l4, l5, k0, k1};
+
+    // const size_t sample_buffer_size = 1 << 14;
+    // TrainingAndEval workspace{learners, sample_buffer_size};
+    // // dummy_data(workspace.sample_buffers, workspace.sample_buffer_size);
+    // workspace.run_actor = true;
+    // workspace.run_learn = false;
+    // workspace.run_eval = false;
+
+    // const size_t n_actor_threads = 6;
+    // workspace.run(n_actor_threads);
     return 0;
 }
