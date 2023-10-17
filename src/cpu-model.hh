@@ -54,9 +54,17 @@ struct CPUModel : BattleTypes
             {
                 joined_policy_indices.index({0, row_idx}) = get_index_from_action(state.battle.bytes, state.row_actions[row_idx].get(), 0);
             }
+            for (int row_idx = rows; row_idx < 9; ++row_idx)
+            {
+                joined_policy_indices.index({0, row_idx}) = 0;
+            }
             for (int col_idx = 0; col_idx < cols; ++col_idx)
             {
                 joined_policy_indices.index({0, 9 + col_idx}) = get_index_from_action(state.battle.bytes, state.col_actions[col_idx].get(), 184);
+            }
+            for (int col_idx = cols; col_idx < 9; ++col_idx)
+            {
+                joined_policy_indices.index({0, 9 + col_idx}) = 0;
             }
             auto nn_output = net->forward(input, joined_policy_indices);
             torch::Tensor row_policy_tensor = torch::softmax(nn_output.row_log_policy, 1);
@@ -72,6 +80,7 @@ struct CPUModel : BattleTypes
                 output.col_policy[col_idx] = BattleTypes::Real{col_policy_tensor.index({0, col_idx}).item().toFloat()};
             }
             output.value.row_value = BattleTypes::Real{nn_output.value.item().toFloat()};
+            1 + 1;
         }
     };
 };

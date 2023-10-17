@@ -13,16 +13,16 @@ namespace Options
     const float base_learning_rate = .001;
     const float total_learning_rate_decay = .1;
     const float max_learn_actor_ratio = 150;
-    const size_t full_iterations = 1 << 10;
+    const size_t full_iterations = 1 << 12;
     const size_t partial_iterations = 1 << 8;
     const size_t eval_iterations = 1 << 10;
-    const float full_search_prob = .25;
+    const float full_search_prob = .20;
     const int berth = 1 << 8;
     const size_t max_devices = 4; // only used as size for std::thread[]
     const int metric_history_size = 400;
     const float value_q_weight = .5;
 
-    const size_t total_samples = 1 << 27;
+    const size_t total_samples = 1 << 24;
     const size_t n_checkpoints = 8;
     const size_t n_samples_per_checkpoint = total_samples / n_checkpoints;
 };
@@ -31,6 +31,7 @@ namespace Options
 #include "./src/battle.hh"
 #include "./src/cpu-model.hh"
 #include "./src/exp3-single.hh"
+#include "./src/search.hh"
 
 void dummy_data(
     LearnerBuffers sample_buffers,
@@ -159,6 +160,7 @@ struct LearnerData
     virtual W::Types::Model make_w_model() const = 0;
     virtual void step(LearnerBuffers, bool) = 0;
     virtual void set_lr(const float lr) = 0;
+    virtual void save(const std::string str) = 0;
 };
 
 template <typename Net, typename Optimizer>
@@ -271,6 +273,11 @@ struct LearnerImpl : LearnerData
             pt(output.value.index({slice, "..."}));
             pt(output.row_log_policy.index({slice, "..."}));
             pt(output.col_log_policy.index({slice, "..."}));
+            std::cout << "targets:" << std::endl;
+            pt(value_target.index({slice, "..."}));
+            pt(row_policy_target.index({slice, "..."}));
+            pt(col_policy_target.index({slice, "..."}));
+
         }
 
         torch::Tensor loss = value_loss + this->policy_loss_weight * (row_policy_loss + col_policy_loss);
@@ -286,6 +293,11 @@ struct LearnerImpl : LearnerData
         {
             std::cout << "CHECKPOINT " << new_checkpoint << " REACHED" << std::endl;
         }
+    }
+
+    void save(const std::string filename)
+    {
+        torch::save(net, filename);
     }
 };
 
@@ -587,7 +599,7 @@ struct TrainingAndEval
 
     void eval()
     {
-        const size_t n_threads = 6;
+        const size_t n_threads = 4;
         const size_t n_iter = 1 << 8;
         const size_t n_prints = 1 << 4;
         const size_t n_iter_per_print = n_iter / n_prints;
@@ -675,8 +687,23 @@ struct TrainingAndEval
             actor_threads[i].join();
         }
 
+        int l = 0;
+        for (const Learner &learner : learners)
+        {
+
+            auto timestamp = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+            std::ostringstream oss;
+            oss << std::put_time(std::gmtime(&timestamp), "%Y%m%d%H%M%S") << "-" << l;
+            std::string timestampStr = oss.str();
+            std::string filename = "./saved/model_" + timestampStr + ".pt";
+            learner->save(filename);
+            ++l;
+        }
+
         std::thread eval_thread{&TrainingAndEval::eval, this};
         eval_thread.join();
+
+
     }
 };
 
@@ -711,7 +738,7 @@ int main()
     // in my benchmarking, my 2nd GPU is 3x slower. Thus the first GPU has 3 times as many nets to train
     std::vector<Learner> learners = {l0, l1, l2, l3, l4, l5, k0, k1};
 
-    const size_t sample_buffer_size = 1 << 16;
+    const size_t sample_buffer_size = 1 << 14;
     TrainingAndEval workspace{learners, sample_buffer_size};
     // dummy_data(workspace.sample_buffers, workspace.sample_buffer_size);
     workspace.run_actor = true;
