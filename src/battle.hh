@@ -58,15 +58,20 @@ struct BattleTypes : TypeList
         pkmn_gen1_battle_options options{};
         pkmn_result result{};
         pkmn_gen1_calc_options calc_options{}; // contains 24 byte override
-        pkmn_gen1_chance_options chance_options{};
+        pkmn_gen1_chance_options chance_options{}; // rational, chance actions
         bool clamp = false;
 
         State(const int row_idx = 0, const int col_idx = 0)
         {
             const auto row_side = sides[row_idx];
             const auto col_side = sides[col_idx];
-            memcpy(battle.bytes, row_side, 184);
-            memcpy(battle.bytes + 184, col_side, 184);
+            memcpy(battle.bytes, row_side, 3 * 24);
+            memcpy(battle.bytes + 144, row_side + 144, 40);
+            memcpy(battle.bytes + 184, col_side, 3 * 24);
+            memcpy(battle.bytes + 184 + 144, col_side + 144, 40);
+            // memcpy(battle.bytes, row_side, 184);
+            // memcpy(battle.bytes + 184, col_side, 184);
+
             for (int i = 2 * 184; i < n_bytes_battle; ++i)
             {
                 battle.bytes[i] = 0;
@@ -85,6 +90,7 @@ struct BattleTypes : TypeList
             memcpy(battle.bytes, other.battle.bytes, 384);
             log_options = {this->obs.get().data(), log_size};
             pkmn_gen1_battle_options_set(&options, &log_options, &chance_options, &calc_options);
+            clamp = other.clamp;
         }
 
         State &operator=(const State &other)
@@ -95,6 +101,7 @@ struct BattleTypes : TypeList
             memcpy(battle.bytes, other.battle.bytes, 384);
             log_options = {this->obs.get().data(), log_size};
             pkmn_gen1_battle_options_set(&options, &log_options, &chance_options, &calc_options);
+            clamp = other.clamp;
             return *this;
         }
 
@@ -126,7 +133,6 @@ struct BattleTypes : TypeList
                 calc_options.overrides.bytes[0] = rolls[battle.bytes[383] && 1];
                 calc_options.overrides.bytes[8] = rolls[battle.bytes[382] && 1];
             }
-            pkmn_gen1_battle_options_set(&options, &log_options, &chance_options, &calc_options);
             result = pkmn_gen1_battle_update(&battle, row_action.get(), col_action.get(), &options);
             const pkmn_result_kind result_kind = pkmn_result_type(result);
             if (result_kind) [[unlikely]]
@@ -147,7 +153,7 @@ struct BattleTypes : TypeList
             }
             else [[likely]]
             {
-                pkmn_gen1_battle_options_set(&options, NULL, NULL, NULL);
+                pkmn_gen1_battle_options_set(&options, &log_options, &chance_options, &calc_options);
             }
         }
 

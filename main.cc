@@ -31,7 +31,7 @@ namespace Options
 #include "./src/battle.hh"
 #include "./src/cpu-model.hh"
 #include "./src/exp3-single.hh"
-#include "./src/exp3-with-policy.hh"
+#include "./src/flat-search.hh"
 #include "./src/arena.hh"
 
 // Pinyon type list for the entire program: Single threaded search on battles using Monte-Carlo eval.
@@ -707,59 +707,112 @@ void count_trasitions(
     counts.print();
 }
 
+void rollout_print(
+    BattleTypes::State &state)
+{
+    BattleTypes::PRNG device{};
+    while (!state.is_terminal())
+    {
+        state.print();
+        const size_t rows = state.row_actions.size();
+        const size_t cols = state.row_actions.size();
+        state.apply_actions(
+            state.row_actions[device.random_int(rows)],
+            state.col_actions[device.random_int(cols)]
+        );
+        state.get_actions();
+    }
+}
+
+
+// model types
+template <typename Types>
+bool check(
+    const size_t iterations,
+    const typename Types::PRNG &device,
+    const typename Types::State &state,
+    const typename Types::Model &model,
+    const typename Types::BanditAlgorithm &bandit
+) {
+    typename Types::MatrixStats stats, flat_stats;
+    {
+        auto device_ = device;
+        auto model_ = model;
+        typename TreeBandit<Types>::MatrixNode node{};
+        typename TreeBandit<Types>::Search search{bandit};
+        search.run_for_iterations(iterations, device_, state, model_, node);
+        stats = node.stats;
+    };
+    {
+        auto device_ = device;
+        auto model_ = model;
+        typename FlatSearch<Types>::Search search{bandit};
+        search.run(iterations, device_, state, model);
+        flat_stats = search.matrix_stats[0];
+    };
+    return stats == flat_stats;
+}
+
+
+
 int main()
 {
+    {
+        // BattleTypes::State state{0, 0};
+        // // state.apply_actions(0, 0);
+        // // state.get_actions();
+        // state.print();
 
-    // BattleTypes::State state{0, 0};
-    // state.apply_actions(0, 0);
-    // state.get_actions();
-    // state.print();
+        // using T = TreeBanditSearchModel<TreeBandit<MonteCarloModel<BattleTypes>>>;
+        // using U = TreeBandit<>
 
-    // count_trasitions(state, 1 << 12);
+    };
+    {
+        NNArena::State arena{&TrainingAndEval::battle_generator, {1 << 18, 1 << 18}, {}, 1};
+        ArenaS::MatrixNode root{};
+        foo(arena, root, 6 * 8, 6);
 
-    NNArena::State state{&TrainingAndEval::battle_generator, {1 << 12, 1 << 12}, {}, 1};
-    ArenaS::MatrixNode root{};
-    foo(state, root, 8, 64);
+        root.stats.cum_values.print();
+        root.stats.joint_visits.print();
+    };
+    {
+        // auto l0 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        //     FCResNet{1 << 7, 1 << 5, 2}, char{0},
+        //     1 << 10, .01, Options::total_learning_rate_decay, 1.0f, .5f);
+        // auto l1 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        //     FCResNet{1 << 8, 1 << 6, 4}, char{0},
+        //     1 << 11, .005, Options::total_learning_rate_decay, 1.0f, .5f);
+        // auto l2 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        //     FCResNet{1 << 7, 1 << 5, 6}, char{0},
+        //     1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .5f);
+        // auto l3 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        //     FCResNet{1 << 8, 1 << 6, 8}, char{0},
+        //     1 << 10, .01, Options::total_learning_rate_decay, 1.0f, .5f);
+        // auto l4 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        //     FCResNet{1 << 7, 1 << 5, 2}, char{0},
+        //     1 << 11, .005, Options::total_learning_rate_decay, 1.0f, .5f);
+        // auto l5 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        //     FCResNet{1 << 8, 1 << 6, 4}, char{0},
+        //     1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .5f);
+        // auto k0 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        //     FCResNet{1 << 7, 1 << 5, 6}, char{1},
+        //     1 << 10, .005, Options::total_learning_rate_decay, 1.0f, .75f);
+        // auto k1 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
+        //     FCResNet{1 << 8, 1 << 6, 8}, char{1},
+        //     1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .75f);
 
-    root.stats.cum_values.print();
-    root.stats.joint_visits.print();
+        // // in my benchmarking, my 2nd GPU is 3x slower. Thus the first GPU has 3 times as many nets to train
+        // std::vector<Learner> learners = {l0, l1, l2, l3, l4, l5, k0, k1};
 
-    // auto l0 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-    //     FCResNet{1 << 7, 1 << 5, 2}, char{0},
-    //     1 << 10, .01, Options::total_learning_rate_decay, 1.0f, .5f);
-    // auto l1 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-    //     FCResNet{1 << 8, 1 << 6, 4}, char{0},
-    //     1 << 11, .005, Options::total_learning_rate_decay, 1.0f, .5f);
-    // auto l2 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-    //     FCResNet{1 << 7, 1 << 5, 6}, char{0},
-    //     1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .5f);
-    // auto l3 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-    //     FCResNet{1 << 8, 1 << 6, 8}, char{0},
-    //     1 << 10, .01, Options::total_learning_rate_decay, 1.0f, .5f);
-    // auto l4 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-    //     FCResNet{1 << 7, 1 << 5, 2}, char{0},
-    //     1 << 11, .005, Options::total_learning_rate_decay, 1.0f, .5f);
-    // auto l5 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-    //     FCResNet{1 << 8, 1 << 6, 4}, char{0},
-    //     1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .5f);
-    // auto k0 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-    //     FCResNet{1 << 7, 1 << 5, 6}, char{1},
-    //     1 << 10, .005, Options::total_learning_rate_decay, 1.0f, .75f);
-    // auto k1 = std::make_shared<LearnerImpl<FCResNet, torch::optim::SGD>>(
-    //     FCResNet{1 << 8, 1 << 6, 8}, char{1},
-    //     1 << 12, .001, Options::total_learning_rate_decay, 1.0f, .75f);
+        // const size_t sample_buffer_size = 1 << 14;
+        // TrainingAndEval workspace{learners, sample_buffer_size};
+        // // dummy_data(workspace.sample_buffers, workspace.sample_buffer_size);
+        // workspace.run_actor = true;
+        // workspace.run_learn = false;
+        // workspace.run_eval = false;
 
-    // // in my benchmarking, my 2nd GPU is 3x slower. Thus the first GPU has 3 times as many nets to train
-    // std::vector<Learner> learners = {l0, l1, l2, l3, l4, l5, k0, k1};
-
-    // const size_t sample_buffer_size = 1 << 14;
-    // TrainingAndEval workspace{learners, sample_buffer_size};
-    // // dummy_data(workspace.sample_buffers, workspace.sample_buffer_size);
-    // workspace.run_actor = true;
-    // workspace.run_learn = false;
-    // workspace.run_eval = false;
-
-    // const size_t n_actor_threads = 6;
-    // workspace.run(n_actor_threads);
+        // const size_t n_actor_threads = 6;
+        // workspace.run(n_actor_threads);
+    };
     return 0;
 }
