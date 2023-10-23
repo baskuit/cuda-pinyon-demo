@@ -1,3 +1,9 @@
+# Status 
+Training is complete and eval is working but untenably slow. The most plausible paths forward are 
+
+* replace search based eval with a faster one use static targets of higher quality (monte carlo using many simulations, perhaps) and simply use MSE loss on the value + exploitability on the policies
+
+* make search based eval faster with CUDA support
 
 # Efficient NN Training
 
